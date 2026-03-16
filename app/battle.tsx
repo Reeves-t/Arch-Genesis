@@ -48,6 +48,7 @@ interface TurnRecord {
 type BattlePhase = 'matchmaking' | 'battle' | 'end';
 type TurnPhase = 'player_select' | 'opponent_thinking' | 'resolving' | 'narrating';
 type InitiativeWinner = 'player' | 'opponent';
+type MomentumEntry = 'player' | 'opponent' | 'draw';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -73,6 +74,21 @@ function buildBattlePhase(turn: number): string {
   if (turn <= 2) return 'early';
   if (turn <= 4) return 'mid';
   return 'late';
+}
+
+function detectAbilityKey(moveDesc: string, kit: Cypher['kit']): string | null {
+  const abilities: { key: string; name: string }[] = [
+    { key: 'basicAttack', name: kit.basicAttack },
+    { key: 'special1', name: kit.special1 },
+    { key: 'special2', name: kit.special2 },
+    { key: 'defense', name: kit.defense },
+    { key: 'passive', name: kit.passive },
+  ];
+  const lower = moveDesc.toLowerCase();
+  for (const a of abilities) {
+    if (lower.includes(a.name.toLowerCase())) return a.key;
+  }
+  return null;
 }
 
 function calcInitiative(cypher: Cypher): number {
@@ -213,6 +229,11 @@ export default function BattleScreen() {
   const [selectedMoveId, setSelectedMoveId] = useState<string | null>(null);
   const [initiativeWinner, setInitiativeWinner] = useState<InitiativeWinner>('player');
   const [showInitiativeBanner, setShowInitiativeBanner] = useState(false);
+
+  // ── Context trackers ─────────────────────────────────────────────────────
+  const [keyMoments, setKeyMoments] = useState<string[]>([]);
+  const [patternTracker, setPatternTracker] = useState<Record<string, number>>({});
+  const [momentumTracker, setMomentumTracker] = useState<MomentumEntry[]>([]);
 
   // ── Narration state ──────────────────────────────────────────────────────
   const [narrationLines, setNarrationLines] = useState<NarratedLine[]>([]);
@@ -421,6 +442,16 @@ export default function BattleScreen() {
       try {
         const bPhase = buildBattlePhase(currentTurn);
 
+        // Build full match history for context injection (all turns)
+        const fullMoveHistory = turnHistory.map((t) => ({
+          turn_number: t.turn_number,
+          player_move: t.player_move,
+          opponent_move: t.opponent_move,
+          advantage_delta: t.advantage_delta,
+          turn_winner: t.turn_winner,
+          narration_summary: t.narration_summary,
+        }));
+
         const { data: turnData, error: turnError } = await supabase.functions.invoke(
           'battle-framework-master',
           {
@@ -430,17 +461,13 @@ export default function BattleScreen() {
               opponent_cypher: opponentCypher,
               advantage_score: advantageScore,
               current_turn: currentTurn,
-              move_history: turnHistory.map((t) => ({
-                turn_number: t.turn_number,
-                player_move: t.player_move,
-                opponent_move: t.opponent_move,
-                advantage_delta: t.advantage_delta,
-                turn_winner: t.turn_winner,
-                narration_summary: t.narration_summary,
-              })),
+              move_history: fullMoveHistory,
               player_selected_move: option.action_description,
               battle_phase: bPhase,
               initiative_winner: initiativeWinner,
+              key_moments: keyMoments,
+              pattern_tracker: patternTracker,
+              momentum_tracker: momentumTracker,
             },
           }
         );
@@ -452,21 +479,22 @@ export default function BattleScreen() {
             turn_result: { ...turnData, player_selected_move: option.action_description },
             player_cypher: playerCypher,
             opponent_cypher: opponentCypher,
-            move_history: turnHistory.map((t) => ({
-              turn_number: t.turn_number,
-              narration_summary: t.narration_summary,
-            })),
+            move_history: fullMoveHistory,
             current_turn: currentTurn,
             battle_phase: bPhase,
             initiative_winner: initiativeWinner,
             turn_winner: turnData.turn_winner ?? 'draw',
             last_turn_context: turnData.last_turn_context ?? null,
             opponent_move_reasoning: turnData.opponent_move_reasoning ?? null,
+            key_moments_this_turn: turnData.key_moments_this_turn ?? [],
+            player_pattern_detected: turnData.player_pattern_detected ?? false,
+            pattern_description: turnData.pattern_description ?? null,
+            match_narrative_state: turnData.match_narrative_state ?? 'opening',
           },
         });
 
         const newAdvantage = turnData.new_advantage_score ?? advantageScore;
-        const turnWinner = turnData.turn_winner ?? 'draw';
+        const turnWinner: MomentumEntry = turnData.turn_winner ?? 'draw';
         const isBattleOver = turnData.is_battle_over ?? false;
         const battleWinner = turnData.winner ?? (newAdvantage >= 0 ? 'player' : 'opponent');
 
@@ -479,6 +507,25 @@ export default function BattleScreen() {
         }
 
         if (isBattleOver) setWinner(battleWinner);
+
+        // Update context trackers
+        const newKeyMoments: string[] = turnData.key_moments_this_turn ?? [];
+        if (newKeyMoments.length > 0) {
+          setKeyMoments((prev) => [...prev, ...newKeyMoments]);
+        }
+
+        const abilityKey = detectAbilityKey(option.action_description, playerCypher.kit);
+        if (abilityKey) {
+          setPatternTracker((prev) => ({
+            ...prev,
+            [abilityKey]: (prev[abilityKey] ?? 0) + 1,
+          }));
+        }
+
+        setMomentumTracker((prev) => {
+          const updated = [...prev, turnWinner];
+          return updated.slice(-3) as MomentumEntry[];
+        });
 
         const lines: NarratedLine[] = narrData?.narration_lines ?? [
           { line: 'The battle continues.', character: 'both' },
@@ -509,7 +556,7 @@ export default function BattleScreen() {
         setSelectedMoveId(null);
       }
     },
-    [turnPhase, opponentCypher, playerCypher, advantageScore, currentTurn, turnHistory, initiativeWinner]
+    [turnPhase, opponentCypher, playerCypher, advantageScore, currentTurn, turnHistory, initiativeWinner, keyMoments, patternTracker, momentumTracker]
   );
 
   // ── Advantage bar ─────────────────────────────────────────────────────────
