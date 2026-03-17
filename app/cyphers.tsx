@@ -15,10 +15,20 @@ import { BackHeader } from '../components/BackHeader';
 import { useGameStore } from '../store/useGameStore';
 import { useAuthStore } from '../store/useAuthStore';
 import { supabase } from '../lib/supabase';
-import { Cypher } from '../types';
+import { Cypher, CypherStats } from '../types';
+import { STAT_CAPS } from '../lib/statDerivation';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const PANEL_WIDTH = SCREEN_WIDTH * 0.30;
+
+const STAT_DISPLAY: { key: keyof CypherStats; label: string; color: string }[] = [
+  { key: 'movement_speed', label: 'Movement Speed', color: '#06b6d4' },
+  { key: 'attack_range',   label: 'Attack Range',   color: '#f97316' },
+  { key: 'melee_power',    label: 'Melee Power',    color: '#ef4444' },
+  { key: 'defense_rating', label: 'Defense Rating', color: '#3b82f6' },
+  { key: 'special_range',  label: 'Special Range',  color: '#a855f7' },
+  { key: 'initiative',     label: 'Initiative',     color: '#eab308' },
+];
 
 export default function CyphersScreen() {
   const { roster, deleteCypher } = useGameStore();
@@ -109,7 +119,7 @@ export default function CyphersScreen() {
                           {cypher.name}
                         </Text>
                         <Text style={styles.panelItemSub} numberOfLines={1}>
-                          {cypher.visualStyle}
+                          {cypher.combatStyle}
                         </Text>
                       </View>
                       {cypher.isActive && (
@@ -168,7 +178,7 @@ const CypherSheet: React.FC<{ cypher: Cypher }> = ({ cypher }) => {
       {/* Header */}
       <View style={styles.sheetHeader}>
         <Text style={styles.cypherName}>{cypher.name}</Text>
-        <Text style={styles.cypherStyle}>{cypher.visualStyle}</Text>
+        <Text style={styles.cypherMeta}>{cypher.sizeClass} · {cypher.combatStyle}</Text>
       </View>
 
       {/* Origin Log */}
@@ -210,10 +220,6 @@ const CypherSheet: React.FC<{ cypher: Cypher }> = ({ cypher }) => {
             <Text style={styles.structureValue}>{cypher.mobility}</Text>
           </View>
           <View style={styles.structureItem}>
-            <Text style={styles.structureLabel}>Material</Text>
-            <Text style={styles.structureValue}>{cypher.material}</Text>
-          </View>
-          <View style={styles.structureItem}>
             <Text style={styles.structureLabel}>Combat</Text>
             <Text style={styles.structureValue}>{cypher.combatStyle}</Text>
           </View>
@@ -238,6 +244,31 @@ const CypherSheet: React.FC<{ cypher: Cypher }> = ({ cypher }) => {
         </View>
         <Text style={styles.weaknessValue}>{cypher.kit.weakness}</Text>
       </View>
+
+      {/* Stats */}
+      {cypher.stats && (
+        <View style={styles.card}>
+          <Text style={styles.cardTitle}>Stats</Text>
+          {STAT_DISPLAY.map(({ key, label, color }) => {
+            const value = cypher.stats![key];
+            const cap = STAT_CAPS[key];
+            return (
+              <View key={key} style={styles.statRow}>
+                <Text style={styles.statLabel}>{label}</Text>
+                <View style={styles.statBarTrack}>
+                  <View
+                    style={[
+                      styles.statBarFill,
+                      { width: `${(value / cap) * 100}%`, backgroundColor: color },
+                    ]}
+                  />
+                </View>
+                <Text style={[styles.statValue, { color }]}>{value}</Text>
+              </View>
+            );
+          })}
+        </View>
+      )}
 
       {/* Status Footer */}
       <View style={styles.statusFooter}>
@@ -354,7 +385,7 @@ const styles = StyleSheet.create({
     borderBottomColor: '#003566',
   },
   cypherName: { fontSize: 24, fontWeight: 'bold', color: '#ffffff' },
-  cypherStyle: { fontSize: 14, color: '#3b82f6', marginTop: 4, fontWeight: '500' },
+  cypherMeta: { fontSize: 14, color: '#3b82f6', marginTop: 4, fontWeight: '500' },
 
   originSection: { paddingVertical: 8 },
   originText: { fontSize: 13, color: '#9ca3af', fontStyle: 'italic', lineHeight: 20 },
@@ -367,10 +398,7 @@ const styles = StyleSheet.create({
     borderColor: '#0f2340',
     overflow: 'hidden',
   },
-  cypherImage: {
-    width: '100%',
-    height: 280,
-  },
+  cypherImage: { width: '100%', height: 280 },
 
   card: {
     backgroundColor: '#001d3d',
@@ -389,14 +417,8 @@ const styles = StyleSheet.create({
   },
 
   // Structure Grid
-  structureGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 12,
-  },
-  structureItem: {
-    width: '46%',
-  },
+  structureGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 12 },
+  structureItem: { width: '46%' },
   structureLabel: { fontSize: 11, color: '#6b7280', marginBottom: 2 },
   structureValue: { fontSize: 14, color: '#ffffff', fontWeight: '500' },
 
@@ -449,12 +471,25 @@ const styles = StyleSheet.create({
     textTransform: 'uppercase',
     letterSpacing: 1,
   },
-  battleProfileText: {
-    fontSize: 13,
-    color: '#d1d5db',
-    lineHeight: 20,
-    fontStyle: 'italic',
+  battleProfileText: { fontSize: 13, color: '#d1d5db', lineHeight: 20, fontStyle: 'italic' },
+
+  // Stats
+  statRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 10,
+    gap: 8,
   },
+  statLabel: { fontSize: 11, color: '#9ca3af', width: 100 },
+  statBarTrack: {
+    flex: 1,
+    height: 5,
+    backgroundColor: '#003566',
+    borderRadius: 3,
+    overflow: 'hidden',
+  },
+  statBarFill: { height: '100%', borderRadius: 3 },
+  statValue: { fontSize: 13, fontWeight: '700', width: 24, textAlign: 'right' },
 
   // Status Footer
   statusFooter: {

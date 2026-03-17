@@ -1,12 +1,27 @@
 export type ConditionState = 'Stable' | 'Strained' | 'Fractured' | 'Destabilized';
 
-// Preset constants for UI — but fields accept any string (custom values)
-export const VISUAL_STYLES = ['Crystalline', 'Organic', 'Geometric', 'Ethereal'] as const;
 export const SIZE_CLASSES = ['Compact', 'Standard', 'Heavy'] as const;
 export const MOBILITIES = ['Agile', 'Balanced', 'Grounded'] as const;
-export const MATERIALS = ['Light', 'Adaptive', 'Reinforced'] as const;
 export const COMBAT_STYLES = ['Aggressive', 'Tactical', 'Defensive'] as const;
 export const WEAKNESSES = ['Energy Vulnerable', 'Physical Vulnerable', 'Low Mobility', 'Fragile Structure'] as const;
+
+export interface CypherStats {
+  movement_speed: number;
+  attack_range: number;
+  melee_power: number;
+  defense_rating: number;
+  special_range: number;
+  initiative: number;
+}
+
+export interface BonusAllocation {
+  movement_speed: number;
+  attack_range: number;
+  melee_power: number;
+  defense_rating: number;
+  special_range: number;
+  initiative: number;
+}
 
 export interface AbilityTemplate {
   id: string;
@@ -35,18 +50,20 @@ export interface FPAllocation {
 export interface Cypher {
   id: string;
   name: string;
-  visualStyle: string;
   originLog?: string;
   description: string;
 
   // Structure
   sizeClass: string;
   mobility: string;
-  material: string;
   combatStyle: string;
 
   // Kit
   kit: CypherKit;
+
+  // Stats (optional for pre-existing cyphers)
+  stats?: CypherStats;
+  bonusAllocation?: BonusAllocation;
 
   // State
   conditionState: ConditionState;
@@ -69,14 +86,13 @@ export interface GenesisWizardDraft {
   visualDescription?: string;
   selectedImageUrl?: string;
   name: string;
-  visualStyle?: string;
   originLog?: string;
   sizeClass?: string;
   mobility?: string;
-  material?: string;
   combatStyle?: string;
   kit?: Partial<CypherKit>;
   description?: string;
+  bonusAllocation?: BonusAllocation;
 }
 
 export interface BattleEvent {

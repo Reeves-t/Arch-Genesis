@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { Cypher, GenesisWizardDraft, BattleResult } from '../types';
+import { Cypher, GenesisWizardDraft, BattleResult, BonusAllocation } from '../types';
 import { supabase } from '../lib/supabase';
 
 interface GameStore {
@@ -30,9 +30,19 @@ interface GameStore {
   getActiveRoster: () => Cypher[];
 }
 
+const EMPTY_BONUS: BonusAllocation = {
+  movement_speed: 0,
+  attack_range: 0,
+  melee_power: 0,
+  defense_rating: 0,
+  special_range: 0,
+  initiative: 0,
+};
+
 const INITIAL_WIZARD: GenesisWizardDraft = {
   step: 1,
   name: '',
+  bonusAllocation: { ...EMPTY_BONUS },
 };
 
 // Seed data
@@ -40,12 +50,10 @@ const SEED_CYPHERS: Cypher[] = [
   {
     id: 'seed-1',
     name: 'Nexus-7',
-    visualStyle: 'Crystalline',
     originLog: 'Emerged from a recursive data stream during Framework initialization.',
     description: 'A tactical crystalline entity that absorbs and redirects energy. Fights with calculated precision — opens with Pulse barrages, reads opponent patterns, then strikes with devastating Overloads at the perfect moment. Prefers to outlast opponents through superior defense and adaptive countermeasures. Cold, methodical, and relentless.',
     sizeClass: 'Standard',
     mobility: 'Balanced',
-    material: 'Adaptive',
     combatStyle: 'Tactical',
     kit: {
       basicAttack: 'Pulse',
@@ -57,24 +65,17 @@ const SEED_CYPHERS: Cypher[] = [
     },
     conditionState: 'Stable',
     fpAllocated: 12,
-    fpAllocation: {
-      attack: 3,
-      defense: 4,
-      mobility: 3,
-      stability: 2,
-    },
+    fpAllocation: { attack: 3, defense: 4, mobility: 3, stability: 2 },
     createdAt: new Date().toISOString(),
     isActive: true,
   },
   {
     id: 'seed-2',
     name: 'Vortex',
-    visualStyle: 'Ethereal',
     originLog: 'Spontaneous manifestation in the outer Framework layers.',
     description: 'A volatile, fast-moving phantom that overwhelms opponents with relentless aggression. Fights like a storm — chains Burst attacks into Cascades, creating openings to Disrupt enemy defenses. Uses momentum-based combat, getting stronger the longer a fight goes. Reckless and unpredictable, but fragile if caught off-guard.',
     sizeClass: 'Compact',
     mobility: 'Agile',
-    material: 'Light',
     combatStyle: 'Aggressive',
     kit: {
       basicAttack: 'Burst',
@@ -86,12 +87,7 @@ const SEED_CYPHERS: Cypher[] = [
     },
     conditionState: 'Stable',
     fpAllocated: 10,
-    fpAllocation: {
-      attack: 4,
-      defense: 2,
-      mobility: 3,
-      stability: 1,
-    },
+    fpAllocation: { attack: 4, defense: 2, mobility: 3, stability: 1 },
     createdAt: new Date().toISOString(),
     isActive: true,
   },
@@ -122,7 +118,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
     genesisWizard: { ...state.genesisWizard, step, ...data },
   })),
 
-  resetWizard: () => set({ genesisWizard: INITIAL_WIZARD }),
+  resetWizard: () => set({ genesisWizard: { ...INITIAL_WIZARD, bonusAllocation: { ...EMPTY_BONUS } } }),
 
   autoStructure: () => {
     set((state) => ({
@@ -130,7 +126,6 @@ export const useGameStore = create<GameStore>((set, get) => ({
         ...state.genesisWizard,
         sizeClass: 'Standard',
         mobility: 'Balanced',
-        material: 'Adaptive',
         combatStyle: 'Tactical',
       },
     }));
@@ -156,15 +151,22 @@ export const useGameStore = create<GameStore>((set, get) => ({
       const cyphers: Cypher[] = (data ?? []).map((row: any) => ({
         id: row.id,
         name: row.name,
-        visualStyle: row.visual_style,
         originLog: row.origin_log ?? undefined,
         description: row.description ?? '',
         imageUrl: row.image_url ?? undefined,
         sizeClass: row.size_class,
         mobility: row.mobility,
-        material: row.material,
         combatStyle: row.combat_style,
         kit: row.kit ?? { basicAttack: '', special1: '', special2: '', defense: '', passive: '', weakness: '' },
+        stats: row.movement_speed != null ? {
+          movement_speed: row.movement_speed,
+          attack_range: row.attack_range,
+          melee_power: row.melee_power,
+          defense_rating: row.defense_rating,
+          special_range: row.special_range,
+          initiative: row.initiative,
+        } : undefined,
+        bonusAllocation: row.bonus_points_allocated ?? undefined,
         conditionState: row.condition_state ?? 'Stable',
         fpAllocated: row.fp_allocated ?? 0,
         fpAllocation: row.fp ?? { attack: 0, defense: 0, mobility: 0, stability: 0 },

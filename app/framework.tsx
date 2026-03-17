@@ -13,11 +13,10 @@ const CONDITION_COLORS: Record<string, string> = {
   Desperate: '#ef4444',
 };
 
-const STYLE_COLORS: Record<string, string> = {
-  Crystalline: '#3b82f6',
-  Organic: '#22c55e',
-  Geometric: '#a855f7',
-  Ethereal: '#06b6d4',
+const COMBAT_COLORS: Record<string, string> = {
+  Aggressive: '#ef4444',
+  Tactical: '#3b82f6',
+  Defensive: '#22c55e',
 };
 
 export default function FrameworkScreen() {
@@ -93,7 +92,7 @@ export default function FrameworkScreen() {
                 <Text style={styles.pickerEmpty}>No cyphers in your roster yet.</Text>
               ) : (
                 roster.map((cypher) => {
-                  const accentColor = STYLE_COLORS[cypher.visualStyle] ?? '#3b82f6';
+                  const accentColor = COMBAT_COLORS[cypher.combatStyle] ?? '#3b82f6';
                   const condColor = CONDITION_COLORS[cypher.conditionState] ?? '#22c55e';
                   const isSelected = selectedCypher?.id === cypher.id;
                   return (
@@ -120,7 +119,7 @@ export default function FrameworkScreen() {
                           {cypher.name}
                         </Text>
                         <Text style={styles.pickerMeta}>
-                          {cypher.sizeClass} · {cypher.combatStyle} · {cypher.visualStyle}
+                          {cypher.sizeClass} · {cypher.combatStyle}
                         </Text>
                         <View style={[styles.conditionPill, { backgroundColor: condColor + '20', borderColor: condColor }]}>
                           <Text style={[styles.conditionPillText, { color: condColor }]}>

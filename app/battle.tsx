@@ -16,9 +16,14 @@ import { useLocalSearchParams, router } from 'expo-router';
 import { useGameStore } from '../store/useGameStore';
 import { supabase } from '../lib/supabase';
 import { Cypher } from '../types';
+import { BattleGrid, GridPos, HighlightedCell } from '../components/battle/BattleGrid';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
-const IMAGE_SIZE = Math.floor(SCREEN_WIDTH * 0.36);
+const PORTRAIT_SIZE = Math.floor(SCREEN_WIDTH * 0.22);
+const GRID_COLS = 13;
+const GRID_ROWS = 7;
+const CELL = 28;
+const GRID_WIDTH = GRID_COLS * CELL; // 364
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -48,6 +53,7 @@ interface TurnRecord {
 type BattlePhase = 'matchmaking' | 'battle' | 'end';
 type TurnPhase = 'player_select' | 'opponent_thinking' | 'resolving' | 'narrating';
 type InitiativeWinner = 'player' | 'opponent';
+type MoveHighlightType = 'move' | 'attack';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -58,15 +64,14 @@ const CONDITION_COLORS: Record<string, string> = {
   Desperate: '#ef4444',
 };
 
-const STYLE_COLORS: Record<string, string> = {
-  Crystalline: '#3b82f6',
-  Organic: '#22c55e',
-  Geometric: '#a855f7',
-  Ethereal: '#06b6d4',
+const COMBAT_COLORS: Record<string, string> = {
+  Aggressive: '#ef4444',
+  Tactical: '#3b82f6',
+  Defensive: '#22c55e',
 };
 
 function getCypherColor(cypher: Cypher): string {
-  return STYLE_COLORS[cypher.visualStyle] ?? '#3b82f6';
+  return COMBAT_COLORS[cypher.combatStyle] ?? '#3b82f6';
 }
 
 function buildBattlePhase(turn: number): string {
@@ -76,31 +81,80 @@ function buildBattlePhase(turn: number): string {
 }
 
 function calcInitiative(cypher: Cypher): number {
+  // Use derived stat when available
+  if (cypher.stats?.initiative != null) return cypher.stats.initiative;
+  // Legacy fallback
   let score = 0;
   if (cypher.mobility === 'Agile') score += 3;
   else if (cypher.mobility === 'Balanced') score += 1;
   else if (cypher.mobility === 'Grounded') score -= 1;
-
   if (cypher.sizeClass === 'Compact') score += 2;
   else if (cypher.sizeClass === 'Heavy') score -= 2;
-
   if (cypher.combatStyle === 'Aggressive') score += 1;
   else if (cypher.combatStyle === 'Defensive') score -= 1;
-
   return score;
+}
+
+function chebyshev(a: GridPos, b: GridPos): number {
+  return Math.max(Math.abs(a.x - b.x), Math.abs(a.y - b.y));
+}
+
+function getReachableCells(
+  from: GridPos,
+  range: number,
+  type: MoveHighlightType,
+  exclude?: GridPos,
+): HighlightedCell[] {
+  const cells: HighlightedCell[] = [];
+  for (let x = 1; x <= GRID_COLS; x++) {
+    for (let y = 1; y <= GRID_ROWS; y++) {
+      if (exclude && exclude.x === x && exclude.y === y) continue;
+      if (chebyshev(from, { x, y }) <= range && chebyshev(from, { x, y }) > 0) {
+        cells.push({ x, y, type });
+      }
+    }
+  }
+  return cells;
+}
+
+function computeHighlights(
+  option: PlayerOption,
+  cypher: Cypher,
+  playerPos: GridPos,
+  opponentPos: GridPos,
+): HighlightedCell[] {
+  const kit = cypher.kit;
+  const desc = option.action_description.toLowerCase();
+  const defenseKey = kit.defense.toLowerCase();
+  const passiveKey = kit.passive.toLowerCase();
+  const special1Key = kit.special1.toLowerCase();
+  const special2Key = kit.special2.toLowerCase();
+
+  const isDefensive = desc.includes(defenseKey) || desc.includes(passiveKey);
+  const isSpecial = desc.includes(special1Key) || desc.includes(special2Key);
+
+  const movSpd = cypher.stats?.movement_speed ?? 3;
+  const atkRange = cypher.stats?.attack_range ?? 4;
+  const spcRange = cypher.stats?.special_range ?? 4;
+
+  if (isDefensive) {
+    return getReachableCells(playerPos, movSpd, 'move', opponentPos);
+  }
+  if (isSpecial) {
+    return getReachableCells(playerPos, spcRange, 'attack', playerPos);
+  }
+  return getReachableCells(playerPos, atkRange, 'attack', playerPos);
 }
 
 function buildFallbackNPC(): Cypher {
   return {
     id: `npc-fallback-${Date.now()}`,
     name: 'Cipher-0',
-    visualStyle: 'Geometric',
     originLog: 'An unknown entity from the outer Framework layers.',
     description:
       'A methodical fighter that reads and adapts to its opponent. Fights with cold precision, opening conservatively then striking hard when patterns are established.',
     sizeClass: 'Standard',
     mobility: 'Balanced',
-    material: 'Adaptive',
     combatStyle: 'Tactical',
     kit: {
       basicAttack: 'Strike',
@@ -136,15 +190,27 @@ function CypherPortrait({ cypher, size }: { cypher: Cypher; size: number }) {
     return (
       <Image
         source={{ uri: cypher.imageUrl }}
-        style={{ width: size, height: size }}
+        style={{ width: size, height: size, borderRadius: 10 }}
         resizeMode="contain"
       />
     );
   }
   return (
-    <View style={{ width: size, height: size, borderRadius: 14, backgroundColor: color + '18', borderWidth: 1.5, borderColor: color + '55', justifyContent: 'center', alignItems: 'center' }}>
-      <Text style={{ fontSize: size * 0.38, color, fontWeight: '800' }}>{cypher.name.charAt(0).toUpperCase()}</Text>
-      <Text style={{ fontSize: 10, color: color + '99', marginTop: 4, letterSpacing: 1 }}>{cypher.visualStyle.toUpperCase()}</Text>
+    <View
+      style={{
+        width: size,
+        height: size,
+        borderRadius: 10,
+        backgroundColor: color + '18',
+        borderWidth: 1.5,
+        borderColor: color + '55',
+        justifyContent: 'center',
+        alignItems: 'center',
+      }}
+    >
+      <Text style={{ fontSize: size * 0.4, color, fontWeight: '800' }}>
+        {cypher.name.charAt(0).toUpperCase()}
+      </Text>
     </View>
   );
 }
@@ -153,16 +219,27 @@ function CypherPortrait({ cypher, size }: { cypher: Cypher; size: number }) {
 
 function TurnHistoryRow({ record, onToggle }: { record: TurnRecord; onToggle: () => void }) {
   const winnerLabel =
-    record.turn_winner === 'player' ? 'You pressed the advantage'
-    : record.turn_winner === 'opponent' ? 'Opponent took the exchange'
-    : 'Draw';
+    record.turn_winner === 'player'
+      ? 'You pressed'
+      : record.turn_winner === 'opponent'
+      ? 'Opponent took it'
+      : 'Draw';
 
   return (
     <View style={histStyles.container}>
       <TouchableOpacity style={histStyles.header} onPress={onToggle} activeOpacity={0.7}>
         <Text style={histStyles.label}>
-          Turn {record.turn_number}
-          <Text style={[histStyles.result, record.turn_winner === 'player' ? histStyles.win : record.turn_winner === 'opponent' ? histStyles.loss : histStyles.draw]}>
+          T{record.turn_number}
+          <Text
+            style={[
+              histStyles.result,
+              record.turn_winner === 'player'
+                ? histStyles.win
+                : record.turn_winner === 'opponent'
+                ? histStyles.loss
+                : histStyles.draw,
+            ]}
+          >
             {' '}— {winnerLabel}
           </Text>
         </Text>
@@ -171,7 +248,9 @@ function TurnHistoryRow({ record, onToggle }: { record: TurnRecord; onToggle: ()
       {record.expanded && (
         <View style={histStyles.body}>
           {record.narration_lines.map((l, i) => (
-            <Text key={i} style={histStyles.line}>{l.line}</Text>
+            <Text key={i} style={histStyles.line}>
+              {l.line}
+            </Text>
           ))}
         </View>
       )}
@@ -180,16 +259,16 @@ function TurnHistoryRow({ record, onToggle }: { record: TurnRecord; onToggle: ()
 }
 
 const histStyles = StyleSheet.create({
-  container: { marginBottom: 4 },
-  header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 4 },
-  label: { fontSize: 11, color: '#4b5563', flex: 1 },
+  container: { marginBottom: 3 },
+  header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 3 },
+  label: { fontSize: 10, color: '#4b5563', flex: 1 },
   result: { fontWeight: '600' },
   win: { color: '#3b82f6' },
   loss: { color: '#ef4444' },
   draw: { color: '#6b7280' },
   chevron: { fontSize: 9, color: '#374151', paddingLeft: 8 },
   body: { paddingTop: 4, paddingBottom: 4, gap: 4 },
-  line: { fontSize: 12, color: '#374151', lineHeight: 18, fontStyle: 'italic' },
+  line: { fontSize: 11, color: '#374151', lineHeight: 16, fontStyle: 'italic' },
 });
 
 // ─── Main Screen ──────────────────────────────────────────────────────────────
@@ -210,9 +289,19 @@ export default function BattleScreen() {
   const [turnHistory, setTurnHistory] = useState<TurnRecord[]>([]);
   const [turnPhase, setTurnPhase] = useState<TurnPhase>('player_select');
   const [winner, setWinner] = useState<string | null>(null);
-  const [selectedMoveId, setSelectedMoveId] = useState<string | null>(null);
   const [initiativeWinner, setInitiativeWinner] = useState<InitiativeWinner>('player');
   const [showInitiativeBanner, setShowInitiativeBanner] = useState(false);
+
+  // ── Grid state ────────────────────────────────────────────────────────────
+  const [playerPos, setPlayerPos] = useState<GridPos>({ x: 1, y: 4 });
+  const [opponentPos, setOpponentPos] = useState<GridPos>({ x: 13, y: 4 });
+  const [selectedMove, setSelectedMove] = useState<PlayerOption | null>(null);
+  const [highlightedCells, setHighlightedCells] = useState<HighlightedCell[]>([]);
+  const [targetCell, setTargetCell] = useState<GridPos | null>(null);
+  const [executeReady, setExecuteReady] = useState(false);
+  const [lastAttackFrom, setLastAttackFrom] = useState<GridPos | null>(null);
+  const [lastAttackTo, setLastAttackTo] = useState<GridPos | null>(null);
+  const [attackConnected, setAttackConnected] = useState(false);
 
   // ── Narration state ──────────────────────────────────────────────────────
   const [narrationLines, setNarrationLines] = useState<NarratedLine[]>([]);
@@ -222,7 +311,7 @@ export default function BattleScreen() {
   const typewriterRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const narrationScrollRef = useRef<ScrollView>(null);
 
-  // ── Matchmaking state ────────────────────────────────────────────────────
+  // ── Matchmaking state ─────────────────────────────────────────────────────
   const MATCHMAKING_TEXTS = ['Scanning the Framework...', 'Locating opponent...', 'Preparing battlefield...'];
   const [matchmakingText, setMatchmakingText] = useState(MATCHMAKING_TEXTS[0]);
 
@@ -234,29 +323,32 @@ export default function BattleScreen() {
   const advantageAnim = useRef(new Animated.Value(0.5)).current;
   const loadingPulse = useRef(new Animated.Value(0.4)).current;
 
-  // Breathing loops
   useEffect(() => {
-    Animated.loop(Animated.sequence([
-      Animated.timing(playerBreathe, { toValue: 1.022, duration: 2200, useNativeDriver: true }),
-      Animated.timing(playerBreathe, { toValue: 1, duration: 2200, useNativeDriver: true }),
-    ])).start();
+    Animated.loop(
+      Animated.sequence([
+        Animated.timing(playerBreathe, { toValue: 1.03, duration: 2200, useNativeDriver: true }),
+        Animated.timing(playerBreathe, { toValue: 1, duration: 2200, useNativeDriver: true }),
+      ])
+    ).start();
     setTimeout(() => {
-      Animated.loop(Animated.sequence([
-        Animated.timing(opponentBreathe, { toValue: 1.022, duration: 2500, useNativeDriver: true }),
-        Animated.timing(opponentBreathe, { toValue: 1, duration: 2500, useNativeDriver: true }),
-      ])).start();
+      Animated.loop(
+        Animated.sequence([
+          Animated.timing(opponentBreathe, { toValue: 1.03, duration: 2500, useNativeDriver: true }),
+          Animated.timing(opponentBreathe, { toValue: 1, duration: 2500, useNativeDriver: true }),
+        ])
+      ).start();
     }, 1200);
   }, []);
 
-  // Loading pulse
   useEffect(() => {
-    Animated.loop(Animated.sequence([
-      Animated.timing(loadingPulse, { toValue: 1, duration: 700, useNativeDriver: true }),
-      Animated.timing(loadingPulse, { toValue: 0.4, duration: 700, useNativeDriver: true }),
-    ])).start();
+    Animated.loop(
+      Animated.sequence([
+        Animated.timing(loadingPulse, { toValue: 1, duration: 700, useNativeDriver: true }),
+        Animated.timing(loadingPulse, { toValue: 0.4, duration: 700, useNativeDriver: true }),
+      ])
+    ).start();
   }, []);
 
-  // Matchmaking text cycling
   useEffect(() => {
     if (battlePhase !== 'matchmaking') return;
     let idx = 0;
@@ -267,7 +359,6 @@ export default function BattleScreen() {
     return () => clearInterval(interval);
   }, [battlePhase]);
 
-  // Kick off matchmaking
   useEffect(() => {
     if (battlePhase !== 'matchmaking' || !playerCypher) return;
     const run = async () => {
@@ -276,14 +367,10 @@ export default function BattleScreen() {
           generateNPC(),
           new Promise<void>((res) => setTimeout(res, 3000)),
         ]);
-        // Calculate initiative
         const playerInit = calcInitiative(playerCypher);
         const npcInit = calcInitiative(npc);
-        let initWinner: InitiativeWinner;
-        if (playerInit > npcInit) initWinner = 'player';
-        else if (npcInit > playerInit) initWinner = 'opponent';
-        else initWinner = Math.random() < 0.5 ? 'player' : 'opponent';
-
+        const initWinner: InitiativeWinner =
+          playerInit > npcInit ? 'player' : npcInit > playerInit ? 'opponent' : Math.random() < 0.5 ? 'player' : 'opponent';
         setOpponentCypher(npc);
         setPlayerOptions(buildInitialOptions(playerCypher));
         setInitiativeWinner(initWinner);
@@ -295,10 +382,8 @@ export default function BattleScreen() {
         const npc = buildFallbackNPC();
         const playerInit = calcInitiative(playerCypher);
         const npcInit = calcInitiative(npc);
-        let initWinner: InitiativeWinner;
-        if (playerInit > npcInit) initWinner = 'player';
-        else if (npcInit > playerInit) initWinner = 'opponent';
-        else initWinner = Math.random() < 0.5 ? 'player' : 'opponent';
+        const initWinner: InitiativeWinner =
+          playerInit > npcInit ? 'player' : npcInit > playerInit ? 'opponent' : Math.random() < 0.5 ? 'player' : 'opponent';
         setOpponentCypher(npc);
         setPlayerOptions(buildInitialOptions(playerCypher));
         setInitiativeWinner(initWinner);
@@ -310,7 +395,6 @@ export default function BattleScreen() {
     run();
   }, []);
 
-  // Advantage bar animation
   useEffect(() => {
     const normalized = (advantageScore + 10) / 20;
     Animated.timing(advantageAnim, { toValue: normalized, duration: 700, useNativeDriver: false }).start();
@@ -333,12 +417,12 @@ export default function BattleScreen() {
 
     if (line.character === 'player') {
       Animated.sequence([
-        Animated.timing(playerPush, { toValue: 10, duration: 120, useNativeDriver: true }),
+        Animated.timing(playerPush, { toValue: 8, duration: 120, useNativeDriver: true }),
         Animated.timing(playerPush, { toValue: 0, duration: 350, useNativeDriver: true }),
       ]).start();
     } else if (line.character === 'opponent') {
       Animated.sequence([
-        Animated.timing(opponentPush, { toValue: -10, duration: 120, useNativeDriver: true }),
+        Animated.timing(opponentPush, { toValue: -8, duration: 120, useNativeDriver: true }),
         Animated.timing(opponentPush, { toValue: 0, duration: 350, useNativeDriver: true }),
       ]).start();
     } else {
@@ -363,17 +447,18 @@ export default function BattleScreen() {
           setCompletedLines((prev) => [...prev, line]);
           setTypewriterText('');
           setCurrentLineIdx((prev) => prev + 1);
-          // Scroll narration to bottom
           narrationScrollRef.current?.scrollToEnd({ animated: true });
-        }, 650);
+        }, 600);
         return () => clearTimeout(holdTimeout);
       }
     }, 26);
 
-    return () => { if (typewriterRef.current) clearInterval(typewriterRef.current); };
+    return () => {
+      if (typewriterRef.current) clearInterval(typewriterRef.current);
+    };
   }, [currentLineIdx, turnPhase, battlePhase]);
 
-  // ── API calls ───────────────────────────────────────────────────────────
+  // ── API calls ────────────────────────────────────────────────────────────
 
   async function generateNPC(): Promise<Cypher> {
     const { data, error } = await supabase.functions.invoke('battle-framework-master', {
@@ -383,12 +468,10 @@ export default function BattleScreen() {
     return {
       id: `npc-${Date.now()}`,
       name: data.name ?? 'Unknown',
-      visualStyle: data.visualStyle ?? 'Geometric',
       originLog: data.originLog,
       description: data.description ?? 'An unknown entity.',
       sizeClass: data.sizeClass ?? 'Standard',
       mobility: data.mobility ?? 'Balanced',
-      material: data.material ?? 'Adaptive',
       combatStyle: data.combatStyle ?? 'Tactical',
       kit: {
         basicAttack: data.basicAttack ?? 'Strike',
@@ -406,113 +489,169 @@ export default function BattleScreen() {
     };
   }
 
-  const handleSelectMove = useCallback(
-    async (option: PlayerOption) => {
-      if (turnPhase !== 'player_select' || !opponentCypher || !playerCypher) return;
+  // ── Phase 1: Pick a move card ─────────────────────────────────────────────
 
-      // Hide initiative banner once first move is made
+  const handlePickMove = useCallback(
+    (option: PlayerOption) => {
+      if (turnPhase !== 'player_select' || !playerCypher || !opponentCypher) return;
       setShowInitiativeBanner(false);
-      setSelectedMoveId(option.id);
-      setTurnPhase('opponent_thinking');
-
-      await new Promise((res) => setTimeout(res, 1800));
-      setTurnPhase('resolving');
-
-      try {
-        const bPhase = buildBattlePhase(currentTurn);
-
-        const { data: turnData, error: turnError } = await supabase.functions.invoke(
-          'battle-framework-master',
-          {
-            body: {
-              mode: 'resolve_turn',
-              player_cypher: playerCypher,
-              opponent_cypher: opponentCypher,
-              advantage_score: advantageScore,
-              current_turn: currentTurn,
-              move_history: turnHistory.map((t) => ({
-                turn_number: t.turn_number,
-                player_move: t.player_move,
-                opponent_move: t.opponent_move,
-                advantage_delta: t.advantage_delta,
-                turn_winner: t.turn_winner,
-                narration_summary: t.narration_summary,
-              })),
-              player_selected_move: option.action_description,
-              battle_phase: bPhase,
-              initiative_winner: initiativeWinner,
-            },
-          }
-        );
-
-        if (turnError || !turnData) throw turnError ?? new Error('No turn data');
-
-        const { data: narrData } = await supabase.functions.invoke('battle-narrator', {
-          body: {
-            turn_result: { ...turnData, player_selected_move: option.action_description },
-            player_cypher: playerCypher,
-            opponent_cypher: opponentCypher,
-            move_history: turnHistory.map((t) => ({
-              turn_number: t.turn_number,
-              narration_summary: t.narration_summary,
-            })),
-            current_turn: currentTurn,
-            battle_phase: bPhase,
-            initiative_winner: initiativeWinner,
-            turn_winner: turnData.turn_winner ?? 'draw',
-            last_turn_context: turnData.last_turn_context ?? null,
-            opponent_move_reasoning: turnData.opponent_move_reasoning ?? null,
-          },
-        });
-
-        const newAdvantage = turnData.new_advantage_score ?? advantageScore;
-        const turnWinner = turnData.turn_winner ?? 'draw';
-        const isBattleOver = turnData.is_battle_over ?? false;
-        const battleWinner = turnData.winner ?? (newAdvantage >= 0 ? 'player' : 'opponent');
-
-        setAdvantageScore(newAdvantage);
-        setPlayerCondition(turnData.player_condition ?? 'Stable');
-        setOpponentCondition(turnData.opponent_condition ?? 'Stable');
-
-        if (turnData.next_player_options?.length === 4) {
-          setPlayerOptions(turnData.next_player_options);
-        }
-
-        if (isBattleOver) setWinner(battleWinner);
-
-        const lines: NarratedLine[] = narrData?.narration_lines ?? [
-          { line: 'The battle continues.', character: 'both' },
-        ];
-
-        const record: TurnRecord = {
-          turn_number: currentTurn,
-          player_move: option.action_description,
-          opponent_move: turnData.opponent_move ?? '?',
-          advantage_delta: turnData.advantage_delta ?? 0,
-          turn_winner: turnWinner,
-          narration_summary: narrData?.turn_summary ?? `Turn ${currentTurn}.`,
-          narration_lines: lines,
-          expanded: false,
-        };
-        setTurnHistory((prev) => [...prev, record]);
-        setCurrentTurn((prev) => prev + 1);
-
-        setNarrationLines(lines);
-        setCompletedLines([]);
-        setCurrentLineIdx(0);
-        setTypewriterText('');
-        setSelectedMoveId(null);
-        setTurnPhase('narrating');
-      } catch (err) {
-        console.warn('Turn error:', err);
-        setTurnPhase('player_select');
-        setSelectedMoveId(null);
-      }
+      setSelectedMove(option);
+      setTargetCell(null);
+      setExecuteReady(false);
+      const cells = computeHighlights(option, playerCypher, playerPos, opponentPos);
+      setHighlightedCells(cells);
     },
-    [turnPhase, opponentCypher, playerCypher, advantageScore, currentTurn, turnHistory, initiativeWinner]
+    [turnPhase, playerCypher, opponentCypher, playerPos, opponentPos]
   );
 
-  // ── Advantage bar ─────────────────────────────────────────────────────────
+  // ── Phase 2: Pick a target cell ───────────────────────────────────────────
+
+  const handleCellPress = useCallback(
+    (pos: GridPos) => {
+      if (!selectedMove || turnPhase !== 'player_select') return;
+      const isHighlighted = highlightedCells.some((h) => h.x === pos.x && h.y === pos.y);
+      if (!isHighlighted) return;
+      setTargetCell(pos);
+      setExecuteReady(true);
+    },
+    [selectedMove, highlightedCells, turnPhase]
+  );
+
+  // ── Phase 3: Execute turn ─────────────────────────────────────────────────
+
+  const handleExecute = useCallback(async () => {
+    if (!executeReady || !selectedMove || !targetCell || !opponentCypher || !playerCypher) return;
+
+    setExecuteReady(false);
+    setHighlightedCells([]);
+    setTargetCell(null);
+    setTurnPhase('opponent_thinking');
+
+    await new Promise((res) => setTimeout(res, 1400));
+    setTurnPhase('resolving');
+
+    try {
+      const bPhase = buildBattlePhase(currentTurn);
+
+      const { data: turnData, error: turnError } = await supabase.functions.invoke(
+        'battle-framework-master',
+        {
+          body: {
+            mode: 'resolve_turn',
+            player_cypher: playerCypher,
+            opponent_cypher: opponentCypher,
+            player_position: playerPos,
+            opponent_position: opponentPos,
+            target_cell: targetCell,
+            advantage_score: advantageScore,
+            current_turn: currentTurn,
+            move_history: turnHistory.map((t) => ({
+              turn_number: t.turn_number,
+              player_move: t.player_move,
+              opponent_move: t.opponent_move,
+              advantage_delta: t.advantage_delta,
+              turn_winner: t.turn_winner,
+              narration_summary: t.narration_summary,
+            })),
+            player_selected_move: selectedMove.action_description,
+            battle_phase: bPhase,
+            initiative_winner: initiativeWinner,
+          },
+        }
+      );
+
+      if (turnError || !turnData) throw turnError ?? new Error('No turn data');
+
+      // Update positions from AI response
+      const newPlayerPos: GridPos = turnData.player_new_position ?? playerPos;
+      const newOpponentPos: GridPos = turnData.opponent_new_position ?? opponentPos;
+      const didConnect: boolean = turnData.attack_connected ?? true;
+
+      // Animate attack line
+      setLastAttackFrom(newPlayerPos);
+      setLastAttackTo(newOpponentPos);
+      setAttackConnected(didConnect);
+
+      // Delay position update for animation
+      await new Promise((res) => setTimeout(res, 300));
+      setPlayerPos(newPlayerPos);
+      setOpponentPos(newOpponentPos);
+
+      const { data: narrData } = await supabase.functions.invoke('battle-narrator', {
+        body: {
+          turn_result: {
+            ...turnData,
+            player_selected_move: selectedMove.action_description,
+            player_position: playerPos,
+            opponent_position: opponentPos,
+            player_new_position: newPlayerPos,
+            opponent_new_position: newOpponentPos,
+            attack_connected: didConnect,
+          },
+          player_cypher: playerCypher,
+          opponent_cypher: opponentCypher,
+          move_history: turnHistory.map((t) => ({
+            turn_number: t.turn_number,
+            narration_summary: t.narration_summary,
+          })),
+          current_turn: currentTurn,
+          battle_phase: bPhase,
+          initiative_winner: initiativeWinner,
+          turn_winner: turnData.turn_winner ?? 'draw',
+          last_turn_context: turnData.last_turn_context ?? null,
+          opponent_move_reasoning: turnData.opponent_move_reasoning ?? null,
+        },
+      });
+
+      const newAdvantage = turnData.new_advantage_score ?? advantageScore;
+      const turnWinner = turnData.turn_winner ?? 'draw';
+      const isBattleOver = turnData.is_battle_over ?? false;
+      const battleWinner = turnData.winner ?? (newAdvantage >= 0 ? 'player' : 'opponent');
+
+      setAdvantageScore(newAdvantage);
+      setPlayerCondition(turnData.player_condition ?? 'Stable');
+      setOpponentCondition(turnData.opponent_condition ?? 'Stable');
+
+      if (turnData.next_player_options?.length === 4) {
+        setPlayerOptions(turnData.next_player_options);
+      }
+
+      if (isBattleOver) setWinner(battleWinner);
+
+      const lines: NarratedLine[] = narrData?.narration_lines ?? [
+        { line: 'The battle continues.', character: 'both' },
+      ];
+
+      const record: TurnRecord = {
+        turn_number: currentTurn,
+        player_move: selectedMove.action_description,
+        opponent_move: turnData.opponent_move ?? '?',
+        advantage_delta: turnData.advantage_delta ?? 0,
+        turn_winner: turnWinner,
+        narration_summary: narrData?.turn_summary ?? `Turn ${currentTurn}.`,
+        narration_lines: lines,
+        expanded: false,
+      };
+      setTurnHistory((prev) => [...prev, record]);
+      setCurrentTurn((prev) => prev + 1);
+      setSelectedMove(null);
+
+      setNarrationLines(lines);
+      setCompletedLines([]);
+      setCurrentLineIdx(0);
+      setTypewriterText('');
+      setTurnPhase('narrating');
+    } catch (err) {
+      console.warn('Turn error:', err);
+      setTurnPhase('player_select');
+      setSelectedMove(null);
+    }
+  }, [
+    executeReady, selectedMove, targetCell, opponentCypher, playerCypher,
+    playerPos, opponentPos, advantageScore, currentTurn, turnHistory, initiativeWinner,
+  ]);
+
+  // ── Advantage bar interpolations ──────────────────────────────────────────
 
   const playerBarWidth = advantageAnim.interpolate({
     inputRange: [0, 0.5, 1],
@@ -533,17 +672,19 @@ export default function BattleScreen() {
     return (
       <View style={styles.container}>
         <SafeAreaView style={styles.safeArea}>
-          <TouchableOpacity style={styles.exitTopBtn} onPress={() => router.back()}>
-            <Text style={styles.exitTopBtnText}>✕</Text>
+          <TouchableOpacity style={styles.exitBtn} onPress={() => router.back()}>
+            <Text style={styles.exitBtnText}>✕</Text>
           </TouchableOpacity>
           <View style={styles.matchmakingContainer}>
             <Animated.View style={[styles.scanRing, { opacity: loadingPulse }]} />
             <Animated.View style={[styles.scanRingInner, { opacity: loadingPulse }]} />
             <Text style={styles.matchmakingTitle}>ENTERING THE FRAMEWORK</Text>
             <Text style={styles.matchmakingStatus}>{matchmakingText}</Text>
-            <View style={styles.matchmakingCypherBadge}>
-              <Text style={styles.matchmakingCypherName}>{playerCypher?.name ?? 'Unknown'}</Text>
-              <Text style={styles.matchmakingCypherSub}>{playerCypher?.sizeClass} · {playerCypher?.combatStyle}</Text>
+            <View style={styles.matchmakingBadge}>
+              <Text style={styles.matchmakingName}>{playerCypher?.name ?? 'Unknown'}</Text>
+              <Text style={styles.matchmakingSub}>
+                {playerCypher?.sizeClass} · {playerCypher?.combatStyle}
+              </Text>
             </View>
           </View>
         </SafeAreaView>
@@ -555,12 +696,14 @@ export default function BattleScreen() {
 
   const playerColor = getCypherColor(playerCypher);
   const opponentColor = getCypherColor(opponentCypher);
+  const isWaitingForMove = turnPhase === 'player_select' && !selectedMove;
+  const isWaitingForTarget = turnPhase === 'player_select' && !!selectedMove && !executeReady;
+  const canExecute = turnPhase === 'player_select' && executeReady;
 
-  // ── Initiative banner text ────────────────────────────────────────────────
-
-  const initiativeBannerText = initiativeWinner === 'player'
-    ? `${playerCypher.name} seizes the first move`
-    : `${opponentCypher.name} moves before you can react`;
+  const initiativeBannerText =
+    initiativeWinner === 'player'
+      ? `${playerCypher.name} seizes first move`
+      : `${opponentCypher.name} moves before you react`;
 
   // ── Battle screen ─────────────────────────────────────────────────────────
 
@@ -568,72 +711,110 @@ export default function BattleScreen() {
     <View style={styles.container}>
       <SafeAreaView style={styles.safeArea}>
 
-        {/* Header */}
-        <View style={styles.battleHeader}>
-          <TouchableOpacity style={styles.exitTopBtn} onPress={() => router.back()}>
-            <Text style={styles.exitTopBtnText}>✕</Text>
+        {/* ── Header ── */}
+        <View style={styles.header}>
+          <TouchableOpacity style={styles.exitBtn} onPress={() => router.back()}>
+            <Text style={styles.exitBtnText}>✕</Text>
           </TouchableOpacity>
           <Text style={styles.turnLabel}>Turn {Math.min(currentTurn, 7)} / 7</Text>
           <View style={{ width: 36 }} />
         </View>
 
-        {/* Initiative banner — visible before turn 1 move is made */}
+        {/* ── Initiative banner ── */}
         {showInitiativeBanner && (
           <View style={styles.initiativeBanner}>
             <Text style={styles.initiativeBannerText}>{initiativeBannerText}</Text>
           </View>
         )}
 
-        {/* Opponent blurred move display */}
-        <View style={styles.opponentSelectArea}>
-          <Text style={styles.opponentSelectLabel}>
-            {turnPhase === 'opponent_thinking' ? '● SELECTING' : '◦ STANDBY'}
-          </Text>
-          <View style={styles.blurGrid}>
-            {[0, 1, 2, 3].map((i) => (
-              <View key={i} style={[styles.blurCard, turnPhase === 'opponent_thinking' && styles.blurCardActive]}>
-                <View style={styles.blurLine} />
-                <View style={[styles.blurLine, { width: '55%', opacity: 0.4 }]} />
-              </View>
-            ))}
-          </View>
-        </View>
-
-        {/* Characters + Advantage Bar */}
-        <View style={styles.charactersSection}>
-          {/* Player (left) */}
+        {/* ── Portraits + Advantage ── */}
+        <View style={styles.portraitsRow}>
+          {/* Player */}
           <View style={styles.characterSlot}>
-            <Animated.View style={[styles.portraitWrapper, { transform: [{ scale: playerBreathe }, { translateX: playerPush }] }]}>
-              <CypherPortrait cypher={playerCypher} size={IMAGE_SIZE} />
+            <Animated.View
+              style={{ transform: [{ scale: playerBreathe }, { translateX: playerPush }] }}
+            >
+              <CypherPortrait cypher={playerCypher} size={PORTRAIT_SIZE} />
             </Animated.View>
-            <Text style={[styles.cypherNameLabel, { color: playerColor }]} numberOfLines={1}>{playerCypher.name}</Text>
-            <View style={[styles.conditionBadge, { backgroundColor: (CONDITION_COLORS[playerCondition] ?? '#22c55e') + '20', borderColor: CONDITION_COLORS[playerCondition] ?? '#22c55e' }]}>
-              <Text style={[styles.conditionText, { color: CONDITION_COLORS[playerCondition] ?? '#22c55e' }]}>{playerCondition}</Text>
+            <Text style={[styles.cypherName, { color: playerColor }]} numberOfLines={1}>
+              {playerCypher.name}
+            </Text>
+            <View
+              style={[
+                styles.conditionBadge,
+                {
+                  backgroundColor: (CONDITION_COLORS[playerCondition] ?? '#22c55e') + '20',
+                  borderColor: CONDITION_COLORS[playerCondition] ?? '#22c55e',
+                },
+              ]}
+            >
+              <Text style={[styles.conditionText, { color: CONDITION_COLORS[playerCondition] ?? '#22c55e' }]}>
+                {playerCondition}
+              </Text>
             </View>
           </View>
 
-          {/* Advantage bar */}
-          <View style={styles.advantageColumn}>
+          {/* Advantage bar (vertical) */}
+          <View style={styles.advantageCol}>
             <View style={styles.advantageTrack}>
-              <Animated.View style={[styles.advantageFillOpp, { width: opponentBarWidth }]} />
-              <Animated.View style={[styles.advantageFillPlayer, { width: playerBarWidth }]} />
-              <Animated.View style={[styles.advantageDot, { left: indicatorLeft }]} />
+              <Animated.View style={[styles.advFillOpp, { width: opponentBarWidth }]} />
+              <Animated.View style={[styles.advFillPlayer, { width: playerBarWidth }]} />
+              <Animated.View style={[styles.advDot, { left: indicatorLeft }]} />
             </View>
           </View>
 
-          {/* Opponent (right) */}
+          {/* Opponent */}
           <View style={styles.characterSlot}>
-            <Animated.View style={[styles.portraitWrapper, { transform: [{ scale: opponentBreathe }, { translateX: opponentPush }] }]}>
-              <CypherPortrait cypher={opponentCypher} size={IMAGE_SIZE} />
+            <Animated.View
+              style={{ transform: [{ scale: opponentBreathe }, { translateX: opponentPush }] }}
+            >
+              <CypherPortrait cypher={opponentCypher} size={PORTRAIT_SIZE} />
             </Animated.View>
-            <Text style={[styles.cypherNameLabel, { color: opponentColor }]} numberOfLines={1}>{opponentCypher.name}</Text>
-            <View style={[styles.conditionBadge, { backgroundColor: (CONDITION_COLORS[opponentCondition] ?? '#22c55e') + '20', borderColor: CONDITION_COLORS[opponentCondition] ?? '#22c55e' }]}>
-              <Text style={[styles.conditionText, { color: CONDITION_COLORS[opponentCondition] ?? '#22c55e' }]}>{opponentCondition}</Text>
+            <Text style={[styles.cypherName, { color: opponentColor }]} numberOfLines={1}>
+              {opponentCypher.name}
+            </Text>
+            <View
+              style={[
+                styles.conditionBadge,
+                {
+                  backgroundColor: (CONDITION_COLORS[opponentCondition] ?? '#22c55e') + '20',
+                  borderColor: CONDITION_COLORS[opponentCondition] ?? '#22c55e',
+                },
+              ]}
+            >
+              <Text style={[styles.conditionText, { color: CONDITION_COLORS[opponentCondition] ?? '#22c55e' }]}>
+                {opponentCondition}
+              </Text>
             </View>
           </View>
         </View>
 
-        {/* Narration area — fixed height scrollable */}
+        {/* ── Battle Grid ── */}
+        <View style={styles.gridSection}>
+          {/* Phase hint above grid */}
+          <Text style={styles.gridHint}>
+            {isWaitingForMove && 'SELECT A MOVE'}
+            {isWaitingForTarget && 'TAP A HIGHLIGHTED CELL'}
+            {canExecute && 'READY — TAP EXECUTE'}
+            {turnPhase === 'opponent_thinking' && '● OPPONENT CHOOSING'}
+            {turnPhase === 'resolving' && '◦ RESOLVING TURN'}
+            {turnPhase === 'narrating' && '◦ NARRATING'}
+          </Text>
+          <BattleGrid
+            playerPos={playerPos}
+            opponentPos={opponentPos}
+            highlightedCells={highlightedCells}
+            targetCell={targetCell}
+            onCellPress={handleCellPress}
+            lastAttackFrom={lastAttackFrom}
+            lastAttackTo={lastAttackTo}
+            attackConnected={attackConnected}
+            playerColor={playerColor}
+            opponentColor={opponentColor}
+          />
+        </View>
+
+        {/* ── Narration ── */}
         <View style={styles.narrationArea}>
           <ScrollView
             ref={narrationScrollRef}
@@ -641,25 +822,26 @@ export default function BattleScreen() {
             contentContainerStyle={styles.narrationContent}
             showsVerticalScrollIndicator={false}
           >
-            {/* Collapsed history for previous turns */}
             {turnHistory.map((record) => (
               <TurnHistoryRow
                 key={record.turn_number}
                 record={record}
                 onToggle={() =>
                   setTurnHistory((prev) =>
-                    prev.map((r) => r.turn_number === record.turn_number ? { ...r, expanded: !r.expanded } : r)
+                    prev.map((r) =>
+                      r.turn_number === record.turn_number ? { ...r, expanded: !r.expanded } : r
+                    )
                   )
                 }
               />
             ))}
-
-            {/* Current turn live narration */}
             {completedLines.map((line, i) => (
-              <Text key={`cur-${i}`} style={styles.narrationLineDimmed}>{line.line}</Text>
+              <Text key={`cur-${i}`} style={styles.narrationDimmed}>
+                {line.line}
+              </Text>
             ))}
             {typewriterText ? (
-              <Text style={styles.narrationLineLive}>{typewriterText}</Text>
+              <Text style={styles.narrationLive}>{typewriterText}</Text>
             ) : null}
             {turnPhase === 'resolving' && (
               <View style={styles.resolvingRow}>
@@ -667,24 +849,34 @@ export default function BattleScreen() {
                 <Text style={styles.resolvingText}>Resolving...</Text>
               </View>
             )}
-            {turnPhase === 'player_select' && turnHistory.length === 0 && (
+            {turnPhase === 'player_select' && turnHistory.length === 0 && !selectedMove && (
               <Text style={styles.narrationHint}>Choose your opening move.</Text>
             )}
           </ScrollView>
         </View>
 
-        {/* Player move options — always visible */}
+        {/* ── Move Cards ── */}
         <View style={styles.movesSection}>
           {turnPhase === 'player_select' ? (
             <View style={styles.movesGrid}>
               {playerOptions.map((opt) => (
                 <TouchableOpacity
                   key={opt.id}
-                  style={[styles.moveCard, selectedMoveId === opt.id && styles.moveCardSelected, opt.is_weakness_finisher && styles.moveCardFinisher]}
-                  onPress={() => handleSelectMove(opt)}
+                  style={[
+                    styles.moveCard,
+                    selectedMove?.id === opt.id && styles.moveCardSelected,
+                    opt.is_weakness_finisher && styles.moveCardFinisher,
+                  ]}
+                  onPress={() => handlePickMove(opt)}
                   activeOpacity={0.75}
                 >
-                  <Text style={[styles.moveCardText, opt.is_weakness_finisher && styles.moveCardFinisherText]}>
+                  <Text
+                    style={[
+                      styles.moveCardText,
+                      opt.is_weakness_finisher && styles.moveCardFinisherText,
+                    ]}
+                    numberOfLines={3}
+                  >
                     {opt.action_description}
                   </Text>
                 </TouchableOpacity>
@@ -692,7 +884,7 @@ export default function BattleScreen() {
             </View>
           ) : turnPhase === 'opponent_thinking' ? (
             <View style={styles.lockInRow}>
-              <Text style={styles.lockInText}>Move locked in — awaiting opponent...</Text>
+              <Text style={styles.lockInText}>Move locked — awaiting opponent...</Text>
             </View>
           ) : (
             <View style={styles.lockInRow}>
@@ -701,11 +893,30 @@ export default function BattleScreen() {
           )}
         </View>
 
-        {/* Battle End Modal */}
+        {/* ── Execute Button ── */}
+        {turnPhase === 'player_select' && (
+          <TouchableOpacity
+            style={[styles.executeBtn, !canExecute && styles.executeBtnDisabled]}
+            onPress={handleExecute}
+            disabled={!canExecute}
+            activeOpacity={0.85}
+          >
+            <Text style={[styles.executeBtnText, !canExecute && styles.executeBtnTextDisabled]}>
+              {canExecute ? 'EXECUTE' : selectedMove ? 'SELECT TARGET' : 'SELECT MOVE'}
+            </Text>
+          </TouchableOpacity>
+        )}
+
+        {/* ── Battle End Modal ── */}
         <Modal visible={battlePhase === 'end'} transparent animationType="fade">
           <View style={styles.endOverlay}>
             <View style={styles.endCard}>
-              <Text style={[styles.endTitle, winner === 'player' ? styles.endVictory : styles.endDefeat]}>
+              <Text
+                style={[
+                  styles.endTitle,
+                  winner === 'player' ? styles.endVictory : styles.endDefeat,
+                ]}
+              >
                 {winner === 'player' ? 'VICTORY' : 'DEFEATED'}
               </Text>
               <Text style={styles.endCypherName}>
@@ -720,7 +931,10 @@ export default function BattleScreen() {
                 <TouchableOpacity style={styles.endBtn} onPress={() => router.replace('/framework')}>
                   <Text style={styles.endBtnText}>Return to Framework</Text>
                 </TouchableOpacity>
-                <TouchableOpacity style={[styles.endBtn, styles.endBtnSecondary]} onPress={() => router.replace('/')}>
+                <TouchableOpacity
+                  style={[styles.endBtn, styles.endBtnSecondary]}
+                  onPress={() => router.replace('/')}
+                >
                   <Text style={styles.endBtnText}>Go Home</Text>
                 </TouchableOpacity>
               </View>
@@ -737,72 +951,105 @@ export default function BattleScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#000814' },
-  safeArea: { flex: 1, display: 'flex', flexDirection: 'column' },
+  safeArea: { flex: 1, flexDirection: 'column' },
 
-  exitTopBtn: { width: 36, height: 36, borderRadius: 18, backgroundColor: '#0a1628', borderWidth: 1, borderColor: '#1e3a5f', justifyContent: 'center', alignItems: 'center' },
-  exitTopBtnText: { fontSize: 14, color: '#6b7280' },
+  exitBtn: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: '#0a1628',
+    borderWidth: 1,
+    borderColor: '#1e3a5f',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  exitBtnText: { fontSize: 13, color: '#6b7280' },
 
   // Matchmaking
   matchmakingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', gap: 20, paddingHorizontal: 32 },
   scanRing: { position: 'absolute', width: 220, height: 220, borderRadius: 110, borderWidth: 1, borderColor: '#1e3a5f' },
   scanRingInner: { position: 'absolute', width: 160, height: 160, borderRadius: 80, borderWidth: 1, borderColor: '#3b82f6' },
   matchmakingTitle: { fontSize: 13, fontWeight: '700', color: '#3b82f6', letterSpacing: 3 },
-  matchmakingStatus: { fontSize: 16, color: '#9ca3af', letterSpacing: 0.5 },
-  matchmakingCypherBadge: { marginTop: 16, alignItems: 'center', backgroundColor: '#0a1628', borderRadius: 12, paddingVertical: 12, paddingHorizontal: 24, borderWidth: 1, borderColor: '#1e3a5f', gap: 4 },
-  matchmakingCypherName: { fontSize: 18, fontWeight: '700', color: '#ffffff' },
-  matchmakingCypherSub: { fontSize: 12, color: '#6b7280' },
+  matchmakingStatus: { fontSize: 15, color: '#9ca3af', letterSpacing: 0.5 },
+  matchmakingBadge: { marginTop: 16, alignItems: 'center', backgroundColor: '#0a1628', borderRadius: 12, paddingVertical: 12, paddingHorizontal: 24, borderWidth: 1, borderColor: '#1e3a5f', gap: 4 },
+  matchmakingName: { fontSize: 18, fontWeight: '700', color: '#ffffff' },
+  matchmakingSub: { fontSize: 12, color: '#6b7280' },
 
-  // Battle header
-  battleHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 10 },
-  turnLabel: { fontSize: 13, fontWeight: '700', color: '#6b7280', letterSpacing: 1.5 },
+  // Header
+  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 8 },
+  turnLabel: { fontSize: 12, fontWeight: '700', color: '#6b7280', letterSpacing: 1.5 },
 
   // Initiative banner
-  initiativeBanner: { marginHorizontal: 16, marginBottom: 6, paddingVertical: 6, paddingHorizontal: 12, backgroundColor: '#05101e', borderRadius: 8, borderWidth: 1, borderColor: '#1e3a5f', alignItems: 'center' },
-  initiativeBannerText: { fontSize: 12, color: '#60a5fa', fontStyle: 'italic', letterSpacing: 0.3 },
+  initiativeBanner: { marginHorizontal: 16, marginBottom: 4, paddingVertical: 5, paddingHorizontal: 12, backgroundColor: '#05101e', borderRadius: 6, borderWidth: 1, borderColor: '#1e3a5f', alignItems: 'center' },
+  initiativeBannerText: { fontSize: 11, color: '#60a5fa', fontStyle: 'italic', letterSpacing: 0.3 },
 
-  // Opponent blurred cards
-  opponentSelectArea: { paddingHorizontal: 16, paddingBottom: 8, gap: 6 },
-  opponentSelectLabel: { fontSize: 10, fontWeight: '600', color: '#374151', letterSpacing: 2 },
-  blurGrid: { flexDirection: 'row', gap: 8 },
-  blurCard: { flex: 1, height: 44, backgroundColor: '#060e1a', borderRadius: 8, borderWidth: 1, borderColor: '#0f1f35', justifyContent: 'center', padding: 10, gap: 6 },
-  blurCardActive: { borderColor: '#1e3a5f', backgroundColor: '#080f1d' },
-  blurLine: { height: 5, width: '80%', borderRadius: 3, backgroundColor: '#1e3a5f', opacity: 0.7 },
-
-  // Characters section
-  charactersSection: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12, paddingVertical: 6, gap: 0 },
-  characterSlot: { flex: 1, alignItems: 'center', gap: 6 },
-  portraitWrapper: { borderWidth: 2, borderRadius: 16, borderColor: 'transparent' },
-  cypherNameLabel: { fontSize: 13, fontWeight: '700', letterSpacing: 0.5, textAlign: 'center' },
-  conditionBadge: { paddingHorizontal: 10, paddingVertical: 3, borderRadius: 6, borderWidth: 1 },
-  conditionText: { fontSize: 10, fontWeight: '700', letterSpacing: 1 },
+  // Portraits row
+  portraitsRow: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12, paddingVertical: 6 },
+  characterSlot: { flex: 1, alignItems: 'center', gap: 4 },
+  cypherName: { fontSize: 12, fontWeight: '700', letterSpacing: 0.5, textAlign: 'center' },
+  conditionBadge: { paddingHorizontal: 8, paddingVertical: 2, borderRadius: 5, borderWidth: 1 },
+  conditionText: { fontSize: 9, fontWeight: '700', letterSpacing: 1 },
 
   // Advantage bar
-  advantageColumn: { width: 20, alignItems: 'center', justifyContent: 'flex-start', paddingTop: (IMAGE_SIZE / 2) - 4 },
-  advantageTrack: { width: 4, height: IMAGE_SIZE + 4, backgroundColor: '#0f1f35', borderRadius: 2, overflow: 'visible', position: 'relative' },
-  advantageFillPlayer: { position: 'absolute', bottom: 0, right: 0, width: 4, backgroundColor: '#3b82f6', borderRadius: 2 },
-  advantageFillOpp: { position: 'absolute', top: 0, left: 0, width: 4, backgroundColor: '#ef4444', borderRadius: 2 },
-  advantageDot: { position: 'absolute', width: 10, height: 10, borderRadius: 5, backgroundColor: '#ffffff', top: '50%', marginTop: -5, marginLeft: -3, zIndex: 2 },
+  advantageCol: { width: 16, alignItems: 'center', justifyContent: 'flex-start', paddingTop: PORTRAIT_SIZE / 2 - 4 },
+  advantageTrack: { width: 3, height: PORTRAIT_SIZE + 4, backgroundColor: '#0f1f35', borderRadius: 2, overflow: 'visible', position: 'relative' },
+  advFillPlayer: { position: 'absolute', bottom: 0, right: 0, width: 3, backgroundColor: '#3b82f6', borderRadius: 2 },
+  advFillOpp: { position: 'absolute', top: 0, left: 0, width: 3, backgroundColor: '#ef4444', borderRadius: 2 },
+  advDot: { position: 'absolute', width: 8, height: 8, borderRadius: 4, backgroundColor: '#ffffff', top: '50%', marginTop: -4, marginLeft: -2.5, zIndex: 2 },
 
-  // Narration — fixed height scrollable
-  narrationArea: { marginHorizontal: 16, marginTop: 8, height: 108, backgroundColor: '#040c18', borderRadius: 12, borderWidth: 1, borderColor: '#0f1f35' },
+  // Grid section
+  gridSection: { alignItems: 'center', paddingVertical: 6 },
+  gridHint: { fontSize: 9, fontWeight: '600', color: '#374151', letterSpacing: 1.8, marginBottom: 5 },
+
+  // Narration
+  narrationArea: { marginHorizontal: 12, marginTop: 6, height: 80, backgroundColor: '#040c18', borderRadius: 10, borderWidth: 1, borderColor: '#0f1f35' },
   narrationScroll: { flex: 1 },
-  narrationContent: { padding: 12, gap: 4 },
-  narrationLineDimmed: { fontSize: 13, color: '#374151', lineHeight: 20, fontStyle: 'italic' },
-  narrationLineLive: { fontSize: 14, color: '#d1d5db', lineHeight: 22 },
-  narrationHint: { fontSize: 13, color: '#4b5563', fontStyle: 'italic' },
-  resolvingRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 4 },
-  resolvingText: { fontSize: 12, color: '#4b5563' },
+  narrationContent: { padding: 10, gap: 3 },
+  narrationDimmed: { fontSize: 11, color: '#374151', lineHeight: 17, fontStyle: 'italic' },
+  narrationLive: { fontSize: 12, color: '#d1d5db', lineHeight: 20 },
+  narrationHint: { fontSize: 11, color: '#4b5563', fontStyle: 'italic' },
+  resolvingRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  resolvingText: { fontSize: 11, color: '#4b5563' },
 
-  // Player moves
-  movesSection: { paddingHorizontal: 16, marginTop: 10, flex: 1 },
-  movesGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
-  moveCard: { width: (SCREEN_WIDTH - 40) / 2, minHeight: 64, backgroundColor: '#060e1a', borderRadius: 10, borderWidth: 1, borderColor: '#1e3a5f', padding: 12, justifyContent: 'center' },
+  // Moves grid
+  movesSection: { paddingHorizontal: 12, marginTop: 6 },
+  movesGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
+  moveCard: {
+    width: (SCREEN_WIDTH - 30) / 2,
+    minHeight: 52,
+    backgroundColor: '#060e1a',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#1e3a5f',
+    padding: 10,
+    justifyContent: 'center',
+  },
   moveCardSelected: { borderColor: '#3b82f6', backgroundColor: '#071428' },
   moveCardFinisher: { borderColor: '#f59e0b', backgroundColor: '#0c0a03' },
-  moveCardText: { fontSize: 12, color: '#93c5fd', lineHeight: 18 },
+  moveCardText: { fontSize: 11, color: '#93c5fd', lineHeight: 16 },
   moveCardFinisherText: { color: '#f59e0b' },
-  lockInRow: { height: 60, justifyContent: 'center', alignItems: 'center' },
-  lockInText: { fontSize: 13, color: '#4b5563', fontStyle: 'italic' },
+  lockInRow: { height: 52, justifyContent: 'center', alignItems: 'center' },
+  lockInText: { fontSize: 12, color: '#4b5563', fontStyle: 'italic' },
+
+  // Execute button
+  executeBtn: {
+    marginHorizontal: 12,
+    marginTop: 8,
+    marginBottom: 4,
+    backgroundColor: '#1d4ed8',
+    borderRadius: 10,
+    paddingVertical: 12,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#3b82f6',
+  },
+  executeBtnDisabled: {
+    backgroundColor: '#0a1628',
+    borderColor: '#1e3a5f',
+    opacity: 0.6,
+  },
+  executeBtnText: { fontSize: 13, fontWeight: '800', color: '#ffffff', letterSpacing: 2 },
+  executeBtnTextDisabled: { color: '#374151' },
 
   // End modal
   endOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.88)', justifyContent: 'center', alignItems: 'center', padding: 32 },

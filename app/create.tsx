@@ -7,12 +7,14 @@ import { useGameStore } from '../store/useGameStore';
 import { useAuthStore } from '../store/useAuthStore';
 import { supabase } from '../lib/supabase';
 import { removeBackground } from '../lib/falClient';
+import { deriveBaseStats, applyBonusPoints, mapCustomStructureToStandard } from '../lib/statDerivation';
 import { SketchStep } from '../components/wizard/SketchStep';
 import { IdentityStep } from '../components/wizard/IdentityStep';
 import { StructureStep } from '../components/wizard/StructureStep';
 import { KitStep } from '../components/wizard/KitStep';
+import { StatsStep } from '../components/wizard/StatsStep';
 import { ReviewStep } from '../components/wizard/ReviewStep';
-import { Cypher } from '../types';
+import { Cypher, BonusAllocation } from '../types';
 
 function generateUUID(): string {
   return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
@@ -22,7 +24,12 @@ function generateUUID(): string {
   });
 }
 
-const STEP_NAMES = ['Sketch', 'Identity', 'Structure', 'Kit', 'Review'];
+const STEP_NAMES = ['Sketch', 'Identity', 'Structure', 'Kit', 'Stats', 'Review'];
+
+const EMPTY_BONUS: BonusAllocation = {
+  movement_speed: 0, attack_range: 0, melee_power: 0,
+  defense_rating: 0, special_range: 0, initiative: 0,
+};
 
 export default function CreateScreen() {
   const { genesisWizard, updateWizardStep, resetWizard, createCypher, autoStructure } = useGameStore();
@@ -34,9 +41,9 @@ export default function CreateScreen() {
       case 1:
         return true;
       case 2:
-        return genesisWizard.name.trim().length > 0 && !!genesisWizard.visualStyle?.trim();
+        return genesisWizard.name.trim().length > 0;
       case 3:
-        return !!genesisWizard.sizeClass?.trim() && !!genesisWizard.mobility?.trim() && !!genesisWizard.material?.trim() && !!genesisWizard.combatStyle?.trim();
+        return !!genesisWizard.sizeClass?.trim() && !!genesisWizard.mobility?.trim() && !!genesisWizard.combatStyle?.trim();
       case 4: {
         const kit = genesisWizard.kit;
         return (
@@ -49,7 +56,13 @@ export default function CreateScreen() {
           !!genesisWizard.description?.trim()
         );
       }
-      case 5:
+      case 5: {
+        const bonus = genesisWizard.bonusAllocation;
+        if (!bonus) return false;
+        const total = Object.values(bonus).reduce((sum, v) => sum + v, 0);
+        return total === 6;
+      }
+      case 6:
         return true;
       default:
         return false;
@@ -57,7 +70,7 @@ export default function CreateScreen() {
   };
 
   const handleNext = () => {
-    if (currentStep < 5) {
+    if (currentStep < 6) {
       updateWizardStep(currentStep + 1, {});
     }
   };
@@ -86,7 +99,6 @@ export default function CreateScreen() {
         let contentType = 'image/jpeg';
         let fileExt = 'jpg';
 
-        // Attempt background removal — transparent PNG if it works
         try {
           console.log('[handleComplete] attempting background removal...');
           uploadUrl = await removeBackground(genesisWizard.selectedImageUrl);
@@ -125,18 +137,35 @@ export default function CreateScreen() {
       console.log('[handleComplete] skipping image upload — missing user or selectedImageUrl');
     }
 
+    // Compute final stats
+    const kit = genesisWizard.kit as Cypher['kit'];
+    const abilities = [kit.basicAttack, kit.special1, kit.special2, kit.defense, kit.passive];
+    const bonus: BonusAllocation = genesisWizard.bonusAllocation || EMPTY_BONUS;
+    const baseStats = deriveBaseStats(
+      genesisWizard.sizeClass!,
+      genesisWizard.mobility!,
+      genesisWizard.combatStyle!,
+      abilities
+    );
+    const finalStats = applyBonusPoints(baseStats, bonus);
+    const standardMapping = mapCustomStructureToStandard(
+      genesisWizard.sizeClass!,
+      genesisWizard.mobility!,
+      genesisWizard.combatStyle!
+    );
+
     const newCypher: Cypher = {
       id: generateUUID(),
       name: genesisWizard.name,
-      visualStyle: genesisWizard.visualStyle!,
       originLog: genesisWizard.originLog,
       description: genesisWizard.description || '',
       imageUrl,
       sizeClass: genesisWizard.sizeClass!,
       mobility: genesisWizard.mobility!,
-      material: genesisWizard.material!,
       combatStyle: genesisWizard.combatStyle!,
-      kit: genesisWizard.kit as Cypher['kit'],
+      kit,
+      stats: finalStats,
+      bonusAllocation: bonus,
       conditionState: 'Stable',
       fpAllocated: 0,
       fpAllocation: { attack: 0, defense: 0, mobility: 0, stability: 0 },
@@ -154,17 +183,23 @@ export default function CreateScreen() {
           id: newCypher.id,
           user_id: user.id,
           name: newCypher.name,
-          visual_style: newCypher.visualStyle,
           origin_log: newCypher.originLog || null,
           description: newCypher.description,
           image_url: newCypher.imageUrl || null,
           size_class: newCypher.sizeClass,
           mobility: newCypher.mobility,
-          material: newCypher.material,
           combat_style: newCypher.combatStyle,
           kit: newCypher.kit,
           fp: newCypher.fpAllocation,
           is_active: newCypher.isActive,
+          movement_speed: finalStats.movement_speed,
+          attack_range: finalStats.attack_range,
+          melee_power: finalStats.melee_power,
+          defense_rating: finalStats.defense_rating,
+          special_range: finalStats.special_range,
+          initiative: finalStats.initiative,
+          bonus_points_allocated: bonus,
+          structure_standard_mapping: standardMapping,
         });
 
         if (!cypherError) {
@@ -172,12 +207,10 @@ export default function CreateScreen() {
           await supabase.from('cypher_sheets').insert({
             cypher_id: newCypher.id,
             user_id: user.id,
-            visual_style: newCypher.visualStyle,
             origin_log: newCypher.originLog || null,
             visual_description: genesisWizard.visualDescription || null,
             size_class: newCypher.sizeClass,
             mobility: newCypher.mobility,
-            material: newCypher.material,
             combat_style: newCypher.combatStyle,
             basic_attack: newCypher.kit.basicAttack,
             special_1: newCypher.kit.special1,
@@ -205,7 +238,8 @@ export default function CreateScreen() {
       case 2: return <IdentityStep />;
       case 3: return <StructureStep />;
       case 4: return <KitStep />;
-      case 5: return <ReviewStep />;
+      case 5: return <StatsStep />;
+      case 6: return <ReviewStep />;
       default: return null;
     }
   };
@@ -267,7 +301,7 @@ export default function CreateScreen() {
               </TouchableOpacity>
             )}
 
-            {currentStep < 5 ? (
+            {currentStep < 6 ? (
               <TouchableOpacity
                 style={[styles.nextBtn, !canProceed() && styles.nextBtnDisabled]}
                 onPress={handleNext}

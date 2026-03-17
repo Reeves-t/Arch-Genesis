@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { View, Text, TextInput, TouchableOpacity, StyleSheet } from 'react-native';
 import { useGameStore } from '../../store/useGameStore';
-import { SIZE_CLASSES, MOBILITIES, MATERIALS, COMBAT_STYLES } from '../../types';
+import { SIZE_CLASSES, MOBILITIES, COMBAT_STYLES } from '../../types';
 
 const CUSTOM_KEY = '__custom__';
 
@@ -11,7 +11,6 @@ export const StructureStep: React.FC = () => {
   const fields = [
     { label: 'Size Class', key: 'sizeClass', presets: SIZE_CLASSES },
     { label: 'Mobility', key: 'mobility', presets: MOBILITIES },
-    { label: 'Material', key: 'material', presets: MATERIALS },
     { label: 'Combat Style', key: 'combatStyle', presets: COMBAT_STYLES },
   ] as const;
 
@@ -98,7 +97,7 @@ export const StructureStep: React.FC = () => {
 
       <View style={styles.infoBox}>
         <Text style={styles.infoText}>
-          Use the "Auto-Structure" button below to fill these fields with balanced defaults.
+          Custom inputs are mapped to the nearest standard equivalent for stat calculation. Use the "Auto-Structure" button below to fill with balanced defaults.
         </Text>
       </View>
     </View>
@@ -106,27 +105,11 @@ export const StructureStep: React.FC = () => {
 };
 
 const styles = StyleSheet.create({
-  container: {
-    gap: 20,
-  },
-  stepTitle: {
-    fontSize: 20,
-    fontWeight: 'bold',
-    color: '#ffffff',
-  },
-  stepDescription: {
-    fontSize: 14,
-    color: '#9ca3af',
-    lineHeight: 20,
-  },
-  field: {
-    gap: 8,
-  },
-  label: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#ffffff',
-  },
+  container: { gap: 20 },
+  stepTitle: { fontSize: 20, fontWeight: 'bold', color: '#ffffff' },
+  stepDescription: { fontSize: 14, color: '#9ca3af', lineHeight: 20 },
+  field: { gap: 8 },
+  label: { fontSize: 14, fontWeight: '600', color: '#ffffff' },
   input: {
     backgroundColor: '#001d3d',
     borderRadius: 12,
@@ -159,14 +142,8 @@ const styles = StyleSheet.create({
     backgroundColor: '#3b82f6',
     borderColor: '#3b82f6',
   },
-  optionText: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: '#9ca3af',
-  },
-  optionTextSelected: {
-    color: '#ffffff',
-  },
+  optionText: { fontSize: 13, fontWeight: '600', color: '#9ca3af' },
+  optionTextSelected: { color: '#ffffff' },
   infoBox: {
     backgroundColor: '#001d3d',
     borderRadius: 12,
@@ -175,9 +152,5 @@ const styles = StyleSheet.create({
     borderColor: '#3b82f6',
     marginTop: 8,
   },
-  infoText: {
-    fontSize: 12,
-    color: '#9ca3af',
-    lineHeight: 18,
-  },
+  infoText: { fontSize: 12, color: '#9ca3af', lineHeight: 18 },
 });

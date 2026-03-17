@@ -49,24 +49,32 @@ ABSOLUTE RULES:
 
 ABILITY NAME INTEGRATION:
 - Reference specific ability names from both cyphers naturally within the prose
-- NOT: "Player used Overload" — YES: "The Overload blast tears through the gap [OpponentName] left open"
-- NOT: "Opponent activated Shield Wall" — YES: "[OpponentName]'s Shield Wall snaps up like a reflex, eating the brunt of the strike"
-- Ability names are things that exist in the world of the fight, not labels
+- NOT: "Player used Overload" — YES: "The Overload blast tears through the gap [OpponentName] just exposed"
+- NOT: "Opponent activated Shield Wall" — YES: "[OpponentName]'s Shield Wall snaps up like a reflex, eating the brunt"
+
+SPATIAL / GRID NARRATION RULES:
+- Use the grid positions and distance to inform the prose's physical texture
+- When fighters are close (distance <= 2): narration is claustrophobic, explosive, "in close quarters", "point-blank", "no room to breathe"
+- When fighters are at mid range (distance 3-5): "across the arena floor", "from the measured distance", "charging the gap between them"
+- When fighters are far apart (distance >= 6): "from the far end of the Framework", "across the open arena", "the distance collapses in an instant"
+- When attack_connected is false: the attack misses — narrate the miss dramatically. The opponent slips it, reads the angle, uses the gap
+- When positions change: narrate the repositioning as physical movement — "closing the gap", "retreating to the edge", "flanking to the right"
+- When positional_advantage exists: the advantaged fighter has the better angle, the reach, the high ground equivalent
 
 TACTICAL RESPONSIVENESS — use last_turn_context and opponent_move_reasoning:
-- If last_turn_context indicates a pattern break: narrate it as a perceptible shift in rhythm — the opponent notices, adjusts, the fight changes texture
-- If last_turn_context indicates escalation: build the intensity, the narration should feel heavier
-- Use opponent_move_reasoning to give the opponent VISIBLE INTENT. The opponent is thinking, adapting, hunting. "It has learned your rhythm." "It waits for exactly this opening." Not just reacting.
+- If last_turn_context indicates a pattern break: narrate it as a perceptible shift in rhythm
+- If last_turn_context indicates escalation: build intensity, narration feels heavier
+- Use opponent_move_reasoning to give the opponent VISIBLE INTENT. "It has learned your rhythm." "It waits for exactly this opening."
 
 STRUCTURE (follow this order every turn):
-1. First line: Naturally establish who moved first based on initiative_winner — show it through action, not announcement
-2. Middle lines (2): The full exchange, reactions, ability names woven in, opponent's intent visible
-3. Final line: Tagged character "both". Conclusive round-result beat. Player won: they pressed the advantage, opponent was pushed back. Opponent won: opponent landed the better exchange. Draw: brutal even exchange.
+1. First line: Who moved first (initiative_winner) — show it through action, not announcement
+2. Middle lines (2): The full exchange, reactions, ability names woven in, opponent's intent visible, spatial details
+3. Final line: Tagged "both". Conclusive round-result beat. Player won: they pressed advantage. Opponent won: they landed better. Draw: brutal even exchange.
 
 PHASE TONE:
-- Early (turns 1-2): Atmospheric, each fighter establishing presence and style
+- Early (turns 1-2): Atmospheric, fighters establishing presence and style
 - Mid (turns 3-4): Intensity rising, patterns emerging, cracks showing
-- Late (turns 5-7): Urgent, every line feels decisive, the fight's outcome is near
+- Late (turns 5-7): Urgent, every line feels decisive
 
 SPECIAL CASES:
 - Lucky Way Out active: Desperation and a sliver of hope in the same breath
@@ -93,25 +101,50 @@ serve(async (req) => {
     } = await req.json();
 
     const tr = turn_result;
-    const recentHistory = (move_history ?? []).slice(-3)
+    const recentHistory = (move_history ?? [])
+      .slice(-3)
       .map((m: any) => `Turn ${m.turn_number}: ${m.narration_summary}`)
       .join(' | ');
 
-    const advantageDesc = tr.advantage_delta > 0
-      ? `${player_cypher.name} gains ground (+${tr.advantage_delta})`
-      : tr.advantage_delta < 0
+    const advantageDesc =
+      tr.advantage_delta > 0
+        ? `${player_cypher.name} gains ground (+${tr.advantage_delta})`
+        : tr.advantage_delta < 0
         ? `${opponent_cypher.name} gains ground (${tr.advantage_delta})`
         : 'Neither gains clear advantage (0)';
 
-    const turnResultDesc = turn_winner === 'player'
-      ? `${player_cypher.name} won this exchange, pressed the advantage`
-      : turn_winner === 'opponent'
-        ? `${opponent_cypher.name} won this exchange, landed the better hit`
-        : 'Even exchange, neither yielded';
+    const turnResultDesc =
+      turn_winner === 'player'
+        ? `${player_cypher.name} won this exchange`
+        : turn_winner === 'opponent'
+        ? `${opponent_cypher.name} won this exchange`
+        : 'Even exchange';
 
-    const initiativeDesc = initiative_winner === 'player'
-      ? `${player_cypher.name} had initiative and committed first`
-      : `${opponent_cypher.name} had initiative and committed first`;
+    const initiativeDesc =
+      initiative_winner === 'player'
+        ? `${player_cypher.name} had initiative and committed first`
+        : `${opponent_cypher.name} had initiative and committed first`;
+
+    // Grid context
+    const pPos = tr.player_position ?? { x: 1, y: 4 };
+    const oPos = tr.opponent_position ?? { x: 13, y: 4 };
+    const pNewPos = tr.player_new_position ?? pPos;
+    const oNewPos = tr.opponent_new_position ?? oPos;
+    const chebyshev = (a: any, b: any) => Math.max(Math.abs(a.x - b.x), Math.abs(a.y - b.y));
+    const distBefore = chebyshev(pPos, oPos);
+    const distAfter = chebyshev(pNewPos, oNewPos);
+    const attackMissed = tr.attack_connected === false;
+    const positionalAdv = tr.positional_advantage ?? 'none';
+
+    const rangeDesc =
+      distAfter <= 2 ? 'close range (point-blank)'
+      : distAfter <= 5 ? 'mid range'
+      : 'long range';
+
+    const positionChange =
+      distAfter < distBefore ? 'fighters closed the gap'
+      : distAfter > distBefore ? 'fighters increased separation'
+      : 'fighters held their ground';
 
     const userMsg = `Narrate this battle turn.
 
@@ -129,8 +162,16 @@ Opponent action: "${tr.opponent_move}" — ${tr.opponent_move_description}
 Outcome: ${advantageDesc}
 Turn result: ${turnResultDesc}
 Conditions: ${player_cypher.name} is ${tr.player_condition} | ${opponent_cypher.name} is ${tr.opponent_condition}
+Attack connected: ${attackMissed ? 'NO (miss)' : 'YES'}
 Lucky Way Out active: ${tr.lucky_way_out_active}
 Battle over: ${tr.is_battle_over}${tr.winner ? ` — ${tr.winner === 'player' ? player_cypher.name : opponent_cypher.name} wins` : ''}
+
+GRID CONTEXT:
+Before: Player at (${pPos.x},${pPos.y}) vs Opponent at (${oPos.x},${oPos.y}) — distance ${distBefore}
+After: Player at (${pNewPos.x},${pNewPos.y}) vs Opponent at (${oNewPos.x},${oNewPos.y}) — distance ${distAfter} (${rangeDesc})
+Movement: ${positionChange}
+Positional advantage: ${positionalAdv}
+${attackMissed ? 'IMPORTANT: The attack MISSED. Narrate the miss — opponent read it, slipped it, or the angle was wrong.' : ''}
 
 TACTICAL CONTEXT:
 ${last_turn_context ?? 'Opening exchange.'}
@@ -143,9 +184,9 @@ RECENT HISTORY: ${recentHistory || 'Opening exchange.'}
 Return exactly this JSON (4 lines, last line always "both"):
 {
   "narration_lines": [
-    {"line": "Initiative line: first mover commits through action.", "character": "player"},
-    {"line": "Exchange line weaving in ability names.", "character": "opponent"},
-    {"line": "Reaction or escalation, opponent intent visible.", "character": "player"},
+    {"line": "Initiative line: first mover commits through action, with spatial detail.", "character": "player"},
+    {"line": "Exchange line weaving in ability names and grid positioning.", "character": "opponent"},
+    {"line": "Reaction or escalation, opponent intent visible, physical movement described.", "character": "player"},
     {"line": "Conclusive round-result line. Who won the exchange is clear.", "character": "both"}
   ],
   "turn_summary": "One sentence factual summary, past tense, no em dashes."
@@ -159,14 +200,17 @@ Return exactly this JSON (4 lines, last line always "both"):
     });
   } catch (err) {
     console.error('battle-narrator error:', err);
-    return new Response(JSON.stringify({
-      narration_lines: [
-        { line: 'The combatants clash in a burst of raw energy.', character: 'both' },
-        { line: 'Neither yields ground easily.', character: 'both' },
-      ],
-      turn_summary: 'Turn resolved with an exchange of moves.',
-    }), {
-      headers: { ...CORS, 'Content-Type': 'application/json' },
-    });
+    return new Response(
+      JSON.stringify({
+        narration_lines: [
+          { line: 'The combatants clash in a burst of raw energy.', character: 'both' },
+          { line: 'Neither yields ground easily.', character: 'both' },
+        ],
+        turn_summary: 'Turn resolved with an exchange of moves.',
+      }),
+      {
+        headers: { ...CORS, 'Content-Type': 'application/json' },
+      }
+    );
   }
 });
