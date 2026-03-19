@@ -8,6 +8,7 @@ import {
   Dimensions,
   Alert,
   Image,
+  ActivityIndicator,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -15,6 +16,8 @@ import { BackHeader } from '../components/BackHeader';
 import { useGameStore } from '../store/useGameStore';
 import { useAuthStore } from '../store/useAuthStore';
 import { supabase } from '../lib/supabase';
+import { generatePoseImage } from '../lib/falClient';
+import { useEffect } from 'react';
 import { Cypher, CypherStats } from '../types';
 import { STAT_CAPS } from '../lib/statDerivation';
 
@@ -30,13 +33,16 @@ const STAT_DISPLAY: { key: keyof CypherStats; label: string; color: string }[] =
   { key: 'initiative',     label: 'Initiative',     color: '#eab308' },
 ];
 
+type SheetView = 'sheet' | 'poses';
+
 export default function CyphersScreen() {
-  const { roster, deleteCypher } = useGameStore();
+  const { roster, deleteCypher, updateCypher } = useGameStore();
   const { user } = useAuthStore();
   const [selectedId, setSelectedId] = useState<string | null>(
     roster.length > 0 ? roster[0].id : null
   );
   const [panelOpen, setPanelOpen] = useState(true);
+  const [sheetView, setSheetView] = useState<SheetView>('sheet');
 
   const handleDelete = (cypher: Cypher) => {
     Alert.alert(
@@ -74,6 +80,11 @@ export default function CyphersScreen() {
     }
   };
 
+  const handleSelectCypher = (id: string) => {
+    setSelectedId(id);
+    setSheetView('sheet');
+  };
+
   return (
     <View style={styles.container}>
       <SafeAreaView style={styles.content}>
@@ -100,7 +111,7 @@ export default function CyphersScreen() {
                         styles.panelItem,
                         selectedId === cypher.id && styles.panelItemSelected,
                       ]}
-                      onPress={() => setSelectedId(cypher.id)}
+                      onPress={() => handleSelectCypher(cypher.id)}
                     >
                       <View
                         style={[
@@ -148,13 +159,59 @@ export default function CyphersScreen() {
           )}
 
           {/* Main Display */}
-          <ScrollView
-            style={styles.mainDisplay}
-            contentContainerStyle={styles.mainContent}
-            showsVerticalScrollIndicator={false}
-          >
+          <View style={styles.mainDisplay}>
             {selectedCypher ? (
-              <CypherSheet cypher={selectedCypher} />
+              <>
+                {/* View Toggle Header */}
+                <View style={styles.viewToggleBar}>
+                  <TouchableOpacity
+                    style={[styles.viewToggleBtn, sheetView === 'sheet' && styles.viewToggleBtnActive]}
+                    onPress={() => setSheetView('sheet')}
+                  >
+                    <Ionicons
+                      name="document-text-outline"
+                      size={13}
+                      color={sheetView === 'sheet' ? '#ffffff' : '#6b7280'}
+                    />
+                    <Text style={[styles.viewToggleBtnText, sheetView === 'sheet' && styles.viewToggleBtnTextActive]}>
+                      Sheet
+                    </Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.viewToggleBtn, sheetView === 'poses' && styles.viewToggleBtnActive]}
+                    onPress={() => setSheetView('poses')}
+                  >
+                    <Ionicons
+                      name="body-outline"
+                      size={13}
+                      color={sheetView === 'poses' ? '#ffffff' : '#6b7280'}
+                    />
+                    <Text style={[styles.viewToggleBtnText, sheetView === 'poses' && styles.viewToggleBtnTextActive]}>
+                      Poses
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+
+                <ScrollView
+                  style={styles.mainScroll}
+                  contentContainerStyle={styles.mainContent}
+                  showsVerticalScrollIndicator={false}
+                >
+                  {sheetView === 'sheet' ? (
+                    <CypherSheet cypher={selectedCypher} />
+                  ) : (
+                    <PoseHub
+                      cypher={selectedCypher}
+                      onPoseUpdate={(updates) => {
+                        updateCypher(selectedCypher.id, updates);
+                        if (user) {
+                          supabase.from('cyphers').update(updates).eq('id', selectedCypher.id).eq('user_id', user.id);
+                        }
+                      }}
+                    />
+                  )}
+                </ScrollView>
+              </>
             ) : (
               <View style={styles.emptyState}>
                 <Ionicons name="cube-outline" size={48} color="#003566" />
@@ -165,12 +222,454 @@ export default function CyphersScreen() {
                 </Text>
               </View>
             )}
-          </ScrollView>
+          </View>
         </View>
       </SafeAreaView>
     </View>
   );
 }
+
+// ─── Upload helper ────────────────────────────────────────────────────────────
+
+async function fetchAndUpload(
+  imageUrl: string,
+  storagePath: string,
+  contentType: 'image/jpeg' | 'image/png' = 'image/png'
+): Promise<string | null> {
+  try {
+    console.log('UPLOAD PATH DEBUG: bucket =', 'cypher-images');
+    console.log('UPLOAD PATH DEBUG: path =', storagePath);
+    console.log('UPLOAD PATH DEBUG: full path length =', storagePath.length);
+    console.log('UPLOAD: Fetching from:', imageUrl.slice(0, 80));
+
+    const response = await fetch(imageUrl);
+    if (!response.ok) throw new Error(`Fetch failed: ${response.status}`);
+
+    const arrayBuffer = await response.arrayBuffer();
+    const uint8Array = new Uint8Array(arrayBuffer);
+    console.log('UPLOAD: Buffer byteLength:', arrayBuffer.byteLength);
+    if (arrayBuffer.byteLength === 0) throw new Error('Fetched buffer is empty');
+
+    const { data, error } = await supabase.storage
+      .from('cypher-images')
+      .upload(storagePath, uint8Array, { contentType, upsert: true });
+
+    console.log('UPLOAD PATH DEBUG: upload data =', JSON.stringify(data));
+    console.log('UPLOAD PATH DEBUG: upload error =', JSON.stringify(error));
+
+    if (error) throw new Error(`Upload error: ${error.message}`);
+
+    const { data: publicData } = supabase.storage.from('cypher-images').getPublicUrl(storagePath);
+    // Append cache-buster so CDN edge doesn't serve a stale 404 for newly uploaded files
+    const cacheBustedUrl = `${publicData?.publicUrl}?v=${Date.now()}`;
+    console.log('UPLOAD PATH DEBUG: public URL =', cacheBustedUrl);
+    console.log('UPLOAD PATH DEBUG: public URL length =', cacheBustedUrl?.length);
+    return cacheBustedUrl;
+  } catch (err) {
+    console.error('UPLOAD: Failed for path:', storagePath, err);
+    return null;
+  }
+}
+
+// ─── Pose Hub ─────────────────────────────────────────────────────────────────
+
+interface PoseSet {
+  id: string;
+  cypher_id: string;
+  pose_type: string;
+  set_number: number;
+  image_right_url: string | null;
+  image_left_url: string | null;
+  is_active: boolean;
+}
+
+interface PoseHubProps {
+  cypher: Cypher;
+  onPoseUpdate: (updates: Partial<Cypher>) => void;
+}
+
+const PoseHub: React.FC<PoseHubProps> = ({ cypher, onPoseUpdate }) => {
+  const [poseGenerating, setPoseGenerating] = useState<'attack' | 'defend' | null>(null);
+  const [poseGenerationStep, setPoseGenerationStep] = useState('');
+  const [poseSets, setPoseSets] = useState<Record<string, PoseSet[]>>({});
+
+  const canGenerate = !!(cypher.imageUrl && cypher.generationPrompt && cypher.generationSeed != null);
+
+  // Load pose sets whenever the selected cypher changes
+  useEffect(() => {
+    loadPoseSets(cypher.id);
+  }, [cypher.id]);
+
+  const loadPoseSets = async (cypherId: string) => {
+    console.log('POSE SETS DISPLAY: Loading sets for cypher:', cypherId);
+    const { data, error } = await supabase
+      .from('cypher_pose_sets')
+      .select('*')
+      .eq('cypher_id', cypherId)
+      .order('pose_type', { ascending: true })
+      .order('set_number', { ascending: true });
+
+    console.log('POSE SETS DISPLAY: Loaded:', data?.length ?? 0, 'sets', error?.message ?? 'no error');
+
+    if (data) {
+      // Debug: log each set's URLs for diagnosis
+      const attackSets = data.filter(s => s.pose_type === 'attack');
+      const defendSets = data.filter(s => s.pose_type === 'defend');
+      console.log('POSE SETS DISPLAY: Attack sets:', attackSets.length);
+      console.log('POSE SETS DISPLAY: Defend sets:', defendSets.length);
+      attackSets.forEach((set, i) => {
+        console.log(`POSE SETS DISPLAY: Attack set ${i + 1}:`, {
+          id: set.id,
+          set_number: set.set_number,
+          is_active: set.is_active,
+          image_right_url: set.image_right_url,
+          image_left_url: set.image_left_url,
+        });
+      });
+      defendSets.forEach((set, i) => {
+        console.log(`POSE SETS DISPLAY: Defend set ${i + 1}:`, {
+          id: set.id,
+          set_number: set.set_number,
+          is_active: set.is_active,
+          image_right_url: set.image_right_url,
+          image_left_url: set.image_left_url,
+        });
+      });
+
+      const grouped = data.reduce((acc, set) => {
+        if (!acc[set.pose_type]) acc[set.pose_type] = [];
+        acc[set.pose_type].push(set as PoseSet);
+        return acc;
+      }, {} as Record<string, PoseSet[]>);
+      setPoseSets(grouped);
+    }
+  };
+
+  const generatePoseSet = async (poseType: 'attack' | 'defend') => {
+    const poseDescription = poseType === 'attack'
+      ? cypher.kit.basicAttack
+      : cypher.kit.defense;
+
+    const baseImageUrl = cypher.imageUrl;
+    const generationPrompt = cypher.generationPrompt;
+    const generationSeed = cypher.generationSeed ?? Math.floor(Math.random() * 1000000);
+
+    if (!baseImageUrl) {
+      console.error('POSE GEN ERROR: No base image URL on cypher');
+      Alert.alert('Error', 'No base image found for this cypher.');
+      return;
+    }
+    if (!generationPrompt) {
+      console.error('POSE GEN ERROR: No generation prompt on cypher');
+      Alert.alert('Error', 'Generation prompt not found. Please recreate this cypher.');
+      return;
+    }
+
+    setPoseGenerating(poseType);
+    setPoseGenerationStep(`Preparing ${poseType} pose...`);
+
+    try {
+      // Step 1 — Right pose (generatePoseImage already includes bg removal)
+      console.log(`POSE GEN: ${poseType} right — base: ${baseImageUrl.slice(0, 60)}`);
+      console.log(`POSE GEN: prompt: ${generationPrompt.slice(0, 80)}`);
+      console.log(`POSE GEN: desc: ${poseDescription}, seed: ${generationSeed}`);
+      setPoseGenerationStep(`Generating ${poseType} right angle...`);
+
+      const rightUrl = await generatePoseImage(
+        baseImageUrl, generationPrompt, generationSeed, poseType, poseDescription, 'right'
+      );
+      console.log(`POSE GEN: right result: ${rightUrl?.slice(0, 60) ?? 'null'}`);
+      if (!rightUrl) throw new Error('Right facing generation returned null');
+
+      await new Promise(r => setTimeout(r, 1000));
+
+      // Step 2 — Left pose
+      console.log(`POSE GEN: ${poseType} left — starting`);
+      setPoseGenerationStep(`Generating ${poseType} left angle...`);
+
+      const leftUrl = await generatePoseImage(
+        baseImageUrl, generationPrompt, generationSeed, poseType, poseDescription, 'left'
+      );
+      console.log(`POSE GEN: left result: ${leftUrl?.slice(0, 60) ?? 'null'}`);
+      if (!leftUrl) throw new Error('Left facing generation returned null');
+
+      // Step 3 — Upload to Supabase Storage immediately (FAL URLs expire quickly)
+      setPoseGenerationStep('Uploading images...');
+      const { data: { user: authUser } } = await supabase.auth.getUser();
+      if (!authUser) throw new Error('No authenticated user');
+
+      const ts = Date.now();
+      const sanitizedCypherId = cypher.id.replace(/[^a-zA-Z0-9-]/g, '');
+      const sanitizedUserId = authUser.id.replace(/[^a-zA-Z0-9-]/g, '');
+      const rightPath = `${sanitizedUserId}/${sanitizedCypherId}/${poseType}_right_${ts}.png`;
+      const leftPath = `${sanitizedUserId}/${sanitizedCypherId}/${poseType}_left_${ts}.png`;
+
+      const rightFinalUrl = await fetchAndUpload(rightUrl, rightPath, 'image/png');
+      if (!rightFinalUrl) throw new Error('Right upload returned null public URL');
+
+      const leftFinalUrl = await fetchAndUpload(leftUrl, leftPath, 'image/png');
+      if (!leftFinalUrl) throw new Error('Left upload returned null public URL');
+
+      // Step 4 — Insert into cypher_pose_sets
+      setPoseGenerationStep('Saving pose set...');
+      const { data: existing } = await supabase
+        .from('cypher_pose_sets')
+        .select('set_number')
+        .eq('cypher_id', cypher.id)
+        .eq('pose_type', poseType)
+        .order('set_number', { ascending: false })
+        .limit(1);
+
+      const nextSetNumber = existing && existing.length > 0 ? existing[0].set_number + 1 : 1;
+      const isFirst = nextSetNumber === 1;
+
+      // First set auto-activates — deactivate any existing (safety)
+      if (isFirst) {
+        await supabase
+          .from('cypher_pose_sets')
+          .update({ is_active: false })
+          .eq('cypher_id', cypher.id)
+          .eq('pose_type', poseType);
+      }
+
+      const { data: inserted, error: insertErr } = await supabase
+        .from('cypher_pose_sets')
+        .insert({
+          cypher_id: cypher.id,
+          user_id: authUser.id,
+          pose_type: poseType,
+          set_number: nextSetNumber,
+          image_right_url: rightFinalUrl,
+          image_left_url: leftFinalUrl,
+          is_active: isFirst,
+          fp_cost: 0,
+        })
+        .select()
+        .single();
+
+      console.log('POSE GEN: insert result:', inserted?.id ?? 'null', insertErr?.message ?? 'ok');
+      if (insertErr) throw new Error(`DB insert failed: ${insertErr.message}`);
+
+      // Step 5 — If active set, also sync to cyphers table columns for battle fallback
+      if (isFirst) {
+        const colUpdates = poseType === 'attack'
+          ? { attack_right_url: rightFinalUrl, attack_left_url: leftFinalUrl }
+          : { defend_right_url: rightFinalUrl, defend_left_url: leftFinalUrl };
+
+        const { error: colErr } = await supabase
+          .from('cyphers')
+          .update(colUpdates)
+          .eq('id', cypher.id);
+
+        console.log('POSE GEN: cyphers column update:', colErr?.message ?? 'ok');
+
+        // Update local store
+        const storeUpdate = poseType === 'attack'
+          ? { attackRightUrl: rightFinalUrl, attackLeftUrl: leftFinalUrl }
+          : { defendRightUrl: rightFinalUrl, defendLeftUrl: leftFinalUrl };
+        onPoseUpdate(storeUpdate);
+      }
+
+      // Step 6 — Reload pose sets (small delay to let DB settle)
+      setPoseGenerationStep('Loading poses...');
+      await new Promise(r => setTimeout(r, 500));
+      await loadPoseSets(cypher.id);
+
+      console.log(`POSE GEN: Complete — ${poseType} set ${nextSetNumber} saved`);
+
+    } catch (err) {
+      console.error('POSE GEN FAILED:', err);
+      Alert.alert(
+        'Pose Generation Failed',
+        err instanceof Error ? err.message : 'Unknown error. Check console.'
+      );
+    } finally {
+      setPoseGenerating(null);
+      setPoseGenerationStep('');
+    }
+  };
+
+  const setActivePoseSet = async (setId: string, poseType: string) => {
+    console.log('POSE SET ACTIVATE:', setId, poseType);
+
+    await supabase
+      .from('cypher_pose_sets')
+      .update({ is_active: false })
+      .eq('cypher_id', cypher.id)
+      .eq('pose_type', poseType);
+
+    await supabase
+      .from('cypher_pose_sets')
+      .update({ is_active: true })
+      .eq('id', setId);
+
+    const activeSet = poseSets[poseType]?.find(s => s.id === setId);
+    if (activeSet) {
+      const colUpdates = poseType === 'attack'
+        ? { attack_right_url: activeSet.image_right_url, attack_left_url: activeSet.image_left_url }
+        : { defend_right_url: activeSet.image_right_url, defend_left_url: activeSet.image_left_url };
+
+      await supabase.from('cyphers').update(colUpdates).eq('id', cypher.id);
+
+      const storeUpdate = poseType === 'attack'
+        ? { attackRightUrl: activeSet.image_right_url, attackLeftUrl: activeSet.image_left_url }
+        : { defendRightUrl: activeSet.image_right_url, defendLeftUrl: activeSet.image_left_url };
+      onPoseUpdate(storeUpdate as any);
+    }
+
+    await loadPoseSets(cypher.id);
+  };
+
+  return (
+    <View style={poseStyles.container}>
+      <Text style={poseStyles.hubTitle}>{cypher.name}</Text>
+      <Text style={poseStyles.hubSub}>Pose Library</Text>
+
+      {/* ── Default Battle Poses ── */}
+      <View style={poseStyles.section}>
+        <Text style={poseStyles.sectionTitle}>DEFAULT BATTLE POSES</Text>
+        <Text style={poseStyles.sectionSub}>Auto-generated at creation, free for all cyphers</Text>
+        <View style={poseStyles.poseRow}>
+          <PoseCard label="Front" imageUrl={cypher.imageFrontUrl ?? cypher.imageUrl ?? null} />
+          <PoseCard label="Right (Player)" imageUrl={cypher.imageRightUrl ?? null} />
+          <PoseCard label="Left (Opponent)" imageUrl={cypher.imageLeftUrl ?? null} />
+        </View>
+      </View>
+
+      {/* ── Attack Pose ── */}
+      <PoseSectionWithSets
+        poseType="attack"
+        label="ATTACK POSE"
+        subtitle={`Triggered when using ${cypher.kit.basicAttack} in battle`}
+        sets={poseSets['attack'] ?? []}
+        isGenerating={poseGenerating === 'attack'}
+        generationStep={poseGenerationStep}
+        canGenerate={canGenerate}
+        onGenerate={() => generatePoseSet('attack')}
+        onSetActive={(id) => setActivePoseSet(id, 'attack')}
+        accentColor="#f97316"
+        icon="flash"
+      />
+
+      {/* ── Defend Pose ── */}
+      <PoseSectionWithSets
+        poseType="defend"
+        label="DEFEND POSE"
+        subtitle={`Triggered when using ${cypher.kit.defense} in battle`}
+        sets={poseSets['defend'] ?? []}
+        isGenerating={poseGenerating === 'defend'}
+        generationStep={poseGenerationStep}
+        canGenerate={canGenerate}
+        onGenerate={() => generatePoseSet('defend')}
+        onSetActive={(id) => setActivePoseSet(id, 'defend')}
+        accentColor="#3b82f6"
+        icon="shield"
+      />
+
+      {!canGenerate && (
+        <Text style={poseStyles.noGenerateHint}>
+          Pose generation requires a cypher created with the Genesis Wizard.
+        </Text>
+      )}
+    </View>
+  );
+};
+
+// ─── Pose Section With Sets ────────────────────────────────────────────────────
+
+interface PoseSectionProps {
+  poseType: string;
+  label: string;
+  subtitle: string;
+  sets: PoseSet[];
+  isGenerating: boolean;
+  generationStep: string;
+  canGenerate: boolean;
+  onGenerate: () => void;
+  onSetActive: (id: string) => void;
+  accentColor: string;
+  icon: string;
+}
+
+const PoseSectionWithSets: React.FC<PoseSectionProps> = ({
+  label, subtitle, sets, isGenerating, generationStep, canGenerate, onGenerate, onSetActive, accentColor, icon,
+}) => (
+  <View style={poseStyles.section}>
+    <Text style={poseStyles.sectionTitle}>{label}</Text>
+    <Text style={poseStyles.sectionSub}>{subtitle}</Text>
+
+    {/* Existing sets */}
+    {sets.map((set) => (
+      <View
+        key={set.id}
+        style={[poseStyles.setCard, set.is_active && { borderColor: '#3b82f6' }]}
+      >
+        <View style={poseStyles.setCardHeader}>
+          <Text style={poseStyles.setCardLabel}>Set {set.set_number}</Text>
+          {set.is_active && (
+            <View style={poseStyles.activeBadge}>
+              <Text style={poseStyles.activeBadgeText}>ACTIVE</Text>
+            </View>
+          )}
+        </View>
+        <View style={poseStyles.poseRow}>
+          <PoseCard label="Right" imageUrl={set.image_right_url} />
+          <PoseCard label="Left" imageUrl={set.image_left_url} />
+        </View>
+        {!set.is_active && (
+          <TouchableOpacity style={poseStyles.setActiveBtn} onPress={() => onSetActive(set.id)}>
+            <Text style={poseStyles.setActiveBtnText}>Set as Active</Text>
+          </TouchableOpacity>
+        )}
+      </View>
+    ))}
+
+    {/* Generate button or loading */}
+    {isGenerating ? (
+      <View style={poseStyles.loadingBlock}>
+        <ActivityIndicator color={accentColor} size="small" />
+        <Text style={poseStyles.loadingText}>{generationStep}</Text>
+      </View>
+    ) : (
+      <TouchableOpacity
+        style={[
+          poseStyles.generateBtn,
+          { backgroundColor: accentColor },
+          !canGenerate && poseStyles.generateBtnDisabled,
+        ]}
+        onPress={onGenerate}
+        disabled={!canGenerate || isGenerating}
+      >
+        <Ionicons name={icon as any} size={16} color="#ffffff" />
+        <Text style={poseStyles.generateBtnText}>
+          {sets.length > 0 ? 'Generate New Set' : `Generate ${label.charAt(0) + label.slice(1).toLowerCase().replace(' pose', '')} Pose`}
+        </Text>
+      </TouchableOpacity>
+    )}
+  </View>
+);
+
+const PoseCard: React.FC<{ label: string; imageUrl: string | null }> = ({ label, imageUrl }) => (
+  <View style={poseStyles.poseCard}>
+    {imageUrl ? (
+      <Image
+        source={{ uri: imageUrl }}
+        style={poseStyles.poseImage}
+        resizeMode="contain"
+        onLoad={() => console.log('POSE IMAGE: Loaded ok —', imageUrl.slice(0, 70))}
+        onError={(e) => console.error('POSE IMAGE: Failed to load —', imageUrl.slice(0, 70), e.nativeEvent.error)}
+      />
+    ) : (
+      <View style={poseStyles.posePlaceholder}>
+        <Ionicons name="body-outline" size={24} color="#003566" />
+        <Text style={poseStyles.posePlaceholderText}>None</Text>
+      </View>
+    )}
+    <Text style={poseStyles.poseLabel}>{label}</Text>
+  </View>
+);
+
+// ─── Cypher Sheet ─────────────────────────────────────────────────────────────
 
 const CypherSheet: React.FC<{ cypher: Cypher }> = ({ cypher }) => {
   return (
@@ -305,6 +804,117 @@ const AbilityRow: React.FC<{ label: string; value: string; icon: string }> = ({ 
   </View>
 );
 
+// ─── Pose Hub Styles ──────────────────────────────────────────────────────────
+
+const poseStyles = StyleSheet.create({
+  container: { gap: 20 },
+  hubTitle: { fontSize: 20, fontWeight: 'bold', color: '#ffffff' },
+  hubSub: { fontSize: 12, color: '#3b82f6', fontWeight: '600', textTransform: 'uppercase', letterSpacing: 1, marginTop: -14 },
+
+  section: {
+    backgroundColor: '#001d3d',
+    borderRadius: 12,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: '#003566',
+    gap: 10,
+  },
+  sectionTitle: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#3b82f6',
+    textTransform: 'uppercase',
+    letterSpacing: 1.2,
+  },
+  sectionSub: { fontSize: 11, color: '#6b7280' },
+
+  poseRow: { flexDirection: 'row', gap: 8 },
+  poseCard: {
+    flex: 1,
+    backgroundColor: '#000814',
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#003566',
+    overflow: 'hidden',
+    alignItems: 'center',
+  },
+  poseImage: { width: '100%', height: 120 },
+  posePlaceholder: {
+    width: '100%',
+    height: 120,
+    justifyContent: 'center',
+    alignItems: 'center',
+    gap: 6,
+  },
+  posePlaceholderText: { fontSize: 9, color: '#374151' },
+  poseLabel: {
+    fontSize: 9,
+    color: '#6b7280',
+    fontWeight: '600',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+    paddingVertical: 5,
+    textAlign: 'center',
+  },
+
+  setCard: {
+    backgroundColor: '#000d1f',
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#003566',
+    padding: 10,
+    gap: 8,
+  },
+  setCardHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  setCardLabel: { fontSize: 11, color: '#9ca3af', fontWeight: '600' },
+  activeBadge: {
+    backgroundColor: 'rgba(59,130,246,0.2)',
+    borderRadius: 4,
+    borderWidth: 1,
+    borderColor: '#3b82f6',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+  },
+  activeBadgeText: { fontSize: 9, color: '#3b82f6', fontWeight: '700', letterSpacing: 0.8 },
+  setActiveBtn: {
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#3b82f6',
+    paddingVertical: 8,
+    alignItems: 'center',
+  },
+  setActiveBtnText: { fontSize: 12, color: '#3b82f6', fontWeight: '600' },
+
+  generateBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    borderRadius: 10,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+  },
+  generateBtnDisabled: { opacity: 0.4 },
+  generateBtnText: { fontSize: 14, fontWeight: '700', color: '#ffffff' },
+
+  loadingBlock: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingVertical: 12,
+    justifyContent: 'center',
+  },
+  loadingText: { fontSize: 12, color: '#9ca3af' },
+
+  noGenerateHint: { fontSize: 10, color: '#4b5563', textAlign: 'center' },
+});
+
+// ─── Main Styles ──────────────────────────────────────────────────────────────
+
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#000814' },
   content: { flex: 1 },
@@ -367,6 +977,29 @@ const styles = StyleSheet.create({
 
   // Main Display
   mainDisplay: { flex: 1 },
+  viewToggleBar: {
+    flexDirection: 'row',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    gap: 6,
+    borderBottomWidth: 1,
+    borderBottomColor: '#003566',
+    backgroundColor: '#000814',
+  },
+  viewToggleBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#003566',
+  },
+  viewToggleBtnActive: { backgroundColor: '#003566', borderColor: '#3b82f6' },
+  viewToggleBtnText: { fontSize: 11, fontWeight: '600', color: '#6b7280' },
+  viewToggleBtnTextActive: { color: '#ffffff' },
+  mainScroll: { flex: 1 },
   mainContent: { padding: 16, paddingBottom: 40 },
   emptyState: {
     flex: 1,

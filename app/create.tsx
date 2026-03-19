@@ -1,12 +1,16 @@
-import React from 'react';
-import { View, Text, TouchableOpacity, ScrollView, StyleSheet } from 'react-native';
+import React, { useState } from 'react';
+import { View, Text, TouchableOpacity, ScrollView, StyleSheet, Modal, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
 import { BackHeader } from '../components/BackHeader';
 import { useGameStore } from '../store/useGameStore';
 import { useAuthStore } from '../store/useAuthStore';
 import { supabase } from '../lib/supabase';
-import { removeBackground } from '../lib/falClient';
+import {
+  removeBackground,
+  generateDirectionalImages,
+  removeBackgroundSequential,
+} from '../lib/falClient';
 import { deriveBaseStats, applyBonusPoints, mapCustomStructureToStandard } from '../lib/statDerivation';
 import { SketchStep } from '../components/wizard/SketchStep';
 import { IdentityStep } from '../components/wizard/IdentityStep';
@@ -24,6 +28,32 @@ function generateUUID(): string {
   });
 }
 
+async function uploadImageToStorage(
+  userId: string,
+  imageUrl: string,
+  path: string,
+  contentType: 'image/jpeg' | 'image/png'
+): Promise<string | null> {
+  try {
+    const response = await fetch(imageUrl);
+    if (!response.ok) return null;
+    const arrayBuffer = await response.arrayBuffer();
+    const uint8Array = new Uint8Array(arrayBuffer);
+    const { data: uploadData, error: uploadError } = await supabase.storage
+      .from('cypher-images')
+      .upload(path, uint8Array, { contentType, upsert: true });
+    if (uploadError || !uploadData) {
+      console.warn('[upload] storage error:', uploadError?.message);
+      return null;
+    }
+    const { data: urlData } = supabase.storage.from('cypher-images').getPublicUrl(uploadData.path);
+    return urlData.publicUrl;
+  } catch (err) {
+    console.warn('[upload] exception:', err);
+    return null;
+  }
+}
+
 const STEP_NAMES = ['Sketch', 'Identity', 'Structure', 'Kit', 'Stats', 'Review'];
 
 const EMPTY_BONUS: BonusAllocation = {
@@ -35,6 +65,9 @@ export default function CreateScreen() {
   const { genesisWizard, updateWizardStep, resetWizard, createCypher, autoStructure } = useGameStore();
   const { user } = useAuthStore();
   const currentStep = genesisWizard.step;
+
+  const [isLoading, setIsLoading] = useState(false);
+  const [loadingText, setLoadingText] = useState('Generating your Cypher...');
 
   const canProceed = () => {
     switch (currentStep) {
@@ -87,16 +120,27 @@ export default function CreateScreen() {
   };
 
   const handleComplete = async () => {
+    setIsLoading(true);
+    setLoadingText('Generating your Cypher...');
+
+    const cypherId = generateUUID();
     let imageUrl: string | undefined = undefined;
+    let imageFrontUrl: string | null = null;
+    let imageRightUrl: string | null = null;
+    let imageLeftUrl: string | null = null;
+
+    // Retrieve prompt + seed stored in wizard state (set during variant selection)
+    const generationPrompt: string | null = (genesisWizard as any).generationPrompt ?? null;
+    const generationSeed: number | null = (genesisWizard as any).generationSeed ?? null;
 
     console.log('[handleComplete] user:', user?.id ?? 'NULL');
     console.log('[handleComplete] selectedImageUrl:', genesisWizard.selectedImageUrl ?? 'NULL');
 
-    // Upload selected fal.ai image to Supabase Storage (with background removal)
+    // ── Step 1: Background removal + upload of primary image ─────────────────
     if (user && genesisWizard.selectedImageUrl) {
       try {
         let uploadUrl = genesisWizard.selectedImageUrl;
-        let contentType = 'image/jpeg';
+        let contentType: 'image/jpeg' | 'image/png' = 'image/jpeg';
         let fileExt = 'jpg';
 
         try {
@@ -104,32 +148,14 @@ export default function CreateScreen() {
           uploadUrl = await removeBackground(genesisWizard.selectedImageUrl);
           contentType = 'image/png';
           fileExt = 'png';
-          console.log('[handleComplete] bg removal OK:', uploadUrl.slice(0, 60));
+          console.log('[handleComplete] bg removal OK');
         } catch (bgErr) {
           console.warn('[handleComplete] bg removal failed, using original:', bgErr);
         }
 
-        console.log('[handleComplete] fetching image from:', uploadUrl.slice(0, 60));
-        const response = await fetch(uploadUrl);
-        console.log('[handleComplete] fetch status:', response.status);
-        const arrayBuffer = await response.arrayBuffer();
-        const uint8Array = new Uint8Array(arrayBuffer);
-        console.log('[handleComplete] image size bytes:', uint8Array.length);
-
-        const fileName = `${user.id}/${Date.now()}.${fileExt}`;
-        const { data: uploadData, error: uploadError } = await supabase.storage
-          .from('cypher-images')
-          .upload(fileName, uint8Array, { contentType, upsert: false });
-
-        if (uploadError) {
-          console.warn('[handleComplete] storage upload error:', uploadError.message);
-        } else if (uploadData) {
-          const { data: urlData } = supabase.storage
-            .from('cypher-images')
-            .getPublicUrl(uploadData.path);
-          imageUrl = urlData.publicUrl;
-          console.log('[handleComplete] uploaded OK, public URL:', imageUrl);
-        }
+        const primaryPath = `${user.id}/${Date.now()}.${fileExt}`;
+        imageUrl = await uploadImageToStorage(user.id, uploadUrl, primaryPath, contentType) ?? undefined;
+        console.log('[handleComplete] primary image uploaded:', imageUrl ?? 'FAILED');
       } catch (err) {
         console.warn('[handleComplete] image upload exception:', err);
       }
@@ -137,7 +163,55 @@ export default function CreateScreen() {
       console.log('[handleComplete] skipping image upload — missing user or selectedImageUrl');
     }
 
-    // Compute final stats
+    // ── Step 2: Directional generation (runs only if we have prompt/seed/image) ─
+    if (user && imageUrl && generationPrompt && generationSeed != null) {
+      setLoadingText('Creating battle stances...');
+      try {
+        console.log('[handleComplete] generating directional images...');
+        const directionals = await generateDirectionalImages(
+          imageUrl,
+          generationPrompt,
+          generationSeed
+        );
+
+        setLoadingText('Removing backgrounds...');
+        const cleaned = await removeBackgroundSequential([
+          directionals.frontUrl,
+          directionals.rightUrl,
+          directionals.leftUrl,
+        ]);
+
+        setLoadingText('Uploading stances...');
+        const [cleanFront, cleanRight, cleanLeft] = cleaned;
+
+        if (cleanFront) {
+          imageFrontUrl = await uploadImageToStorage(
+            user.id, cleanFront,
+            `${user.id}/${cypherId}/front.png`, 'image/png'
+          );
+        }
+        if (cleanRight) {
+          imageRightUrl = await uploadImageToStorage(
+            user.id, cleanRight,
+            `${user.id}/${cypherId}/right.png`, 'image/png'
+          );
+        }
+        if (cleanLeft) {
+          imageLeftUrl = await uploadImageToStorage(
+            user.id, cleanLeft,
+            `${user.id}/${cypherId}/left.png`, 'image/png'
+          );
+        }
+
+        console.log('[handleComplete] directionals — front:', imageFrontUrl ?? 'null', 'right:', imageRightUrl ?? 'null', 'left:', imageLeftUrl ?? 'null');
+      } catch (err) {
+        console.warn('[handleComplete] directional generation failed (non-blocking):', err);
+      }
+    }
+
+    setLoadingText('Finalizing...');
+
+    // ── Step 3: Compute final stats ───────────────────────────────────────────
     const kit = genesisWizard.kit as Cypher['kit'];
     const abilities = [kit.basicAttack, kit.special1, kit.special2, kit.defense, kit.passive];
     const bonus: BonusAllocation = genesisWizard.bonusAllocation || EMPTY_BONUS;
@@ -155,11 +229,16 @@ export default function CreateScreen() {
     );
 
     const newCypher: Cypher = {
-      id: generateUUID(),
+      id: cypherId,
       name: genesisWizard.name,
       originLog: genesisWizard.originLog,
       description: genesisWizard.description || '',
       imageUrl,
+      imageFrontUrl: imageFrontUrl ?? undefined,
+      imageRightUrl: imageRightUrl ?? undefined,
+      imageLeftUrl: imageLeftUrl ?? undefined,
+      generationPrompt: generationPrompt ?? undefined,
+      generationSeed: generationSeed ?? undefined,
       sizeClass: genesisWizard.sizeClass!,
       mobility: genesisWizard.mobility!,
       combatStyle: genesisWizard.combatStyle!,
@@ -173,10 +252,10 @@ export default function CreateScreen() {
       isActive: false,
     };
 
-    // Save to local store
+    // ── Step 4: Save to local store ───────────────────────────────────────────
     createCypher(newCypher);
 
-    // Save to Supabase if authenticated
+    // ── Step 5: Save to Supabase if authenticated ─────────────────────────────
     if (user) {
       try {
         const { error: cypherError } = await supabase.from('cyphers').insert({
@@ -186,6 +265,12 @@ export default function CreateScreen() {
           origin_log: newCypher.originLog || null,
           description: newCypher.description,
           image_url: newCypher.imageUrl || null,
+          image_front_url: imageFrontUrl,
+          image_right_url: imageRightUrl,
+          image_left_url: imageLeftUrl,
+          generation_prompt: generationPrompt,
+          generation_seed: generationSeed,
+          poses_generated_at: (imageFrontUrl || imageRightUrl || imageLeftUrl) ? new Date().toISOString() : null,
           size_class: newCypher.sizeClass,
           mobility: newCypher.mobility,
           combat_style: newCypher.combatStyle,
@@ -203,7 +288,6 @@ export default function CreateScreen() {
         });
 
         if (!cypherError) {
-          // Create cypher sheet (backend battle/narration data)
           await supabase.from('cypher_sheets').insert({
             cypher_id: newCypher.id,
             user_id: user.id,
@@ -229,6 +313,7 @@ export default function CreateScreen() {
     }
 
     resetWizard();
+    setIsLoading(false);
     router.replace('/cyphers');
   };
 
@@ -310,13 +395,24 @@ export default function CreateScreen() {
                 <Text style={styles.nextBtnText}>Next</Text>
               </TouchableOpacity>
             ) : (
-              <TouchableOpacity style={styles.completeBtn} onPress={handleComplete}>
+              <TouchableOpacity style={styles.completeBtn} onPress={handleComplete} disabled={isLoading}>
                 <Text style={styles.completeBtnText}>Complete Genesis</Text>
               </TouchableOpacity>
             )}
           </View>
         </View>
       </SafeAreaView>
+
+      {/* Loading Overlay */}
+      <Modal visible={isLoading} transparent animationType="fade">
+        <View style={styles.loadingOverlay}>
+          <View style={styles.loadingCard}>
+            <ActivityIndicator size="large" color="#3b82f6" />
+            <Text style={styles.loadingText}>{loadingText}</Text>
+            <Text style={styles.loadingSubtext}>This may take a moment...</Text>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -385,4 +481,34 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   completeBtnText: { fontSize: 16, fontWeight: '600', color: '#ffffff' },
+
+  // Loading overlay
+  loadingOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 8, 20, 0.92)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 32,
+  },
+  loadingCard: {
+    backgroundColor: '#001d3d',
+    borderRadius: 20,
+    padding: 36,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#003566',
+    gap: 16,
+    width: '100%',
+  },
+  loadingText: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#ffffff',
+    textAlign: 'center',
+  },
+  loadingSubtext: {
+    fontSize: 12,
+    color: '#6b7280',
+    textAlign: 'center',
+  },
 });

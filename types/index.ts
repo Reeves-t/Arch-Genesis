@@ -70,10 +70,30 @@ export interface Cypher {
   fpAllocated: number;
   fpAllocation: FPAllocation;
 
-  // Assets
+  // Assets — primary image
   imageUrl?: string;
   portraitImage?: string;
   battlePoseImage?: string;
+
+  // Assets — directional battle poses (generated at creation)
+  imageFrontUrl?: string | null;
+  imageRightUrl?: string | null;
+  imageLeftUrl?: string | null;
+
+  // Assets — attack poses
+  attackFrontUrl?: string | null;
+  attackRightUrl?: string | null;
+  attackLeftUrl?: string | null;
+
+  // Assets — defend poses
+  defendFrontUrl?: string | null;
+  defendRightUrl?: string | null;
+  defendLeftUrl?: string | null;
+
+  // Generation metadata (for pose consistency)
+  generationPrompt?: string | null;
+  generationSeed?: number | null;
+  posesGeneratedAt?: string | null;
 
   // Metadata
   createdAt: string;
@@ -85,6 +105,9 @@ export interface GenesisWizardDraft {
   sketchData?: string;
   visualDescription?: string;
   selectedImageUrl?: string;
+  // Stored after variant generation to enable directional generation at creation end
+  generationPrompt?: string;
+  generationSeed?: number;
   name: string;
   originLog?: string;
   sizeClass?: string;

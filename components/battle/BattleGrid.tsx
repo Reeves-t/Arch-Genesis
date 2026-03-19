@@ -1,9 +1,12 @@
 import React, { useRef, useEffect } from 'react';
-import { View, TouchableOpacity, Animated, StyleSheet } from 'react-native';
+import { View, TouchableOpacity, Animated, StyleSheet, Image, Text } from 'react-native';
 
 const COLS = 13;
 const ROWS = 7;
 const CELL = 28;
+
+const CHAR_WIDTH = 52;
+const CHAR_HEIGHT = 64;
 
 export interface GridPos {
   x: number; // 1–13
@@ -27,6 +30,10 @@ interface BattleGridProps {
   attackConnected?: boolean;
   playerColor?: string;
   opponentColor?: string;
+  playerImageUrl?: string | null;
+  opponentImageUrl?: string | null;
+  playerInitial?: string;
+  opponentInitial?: string;
 }
 
 export function BattleGrid({
@@ -40,31 +47,37 @@ export function BattleGrid({
   attackConnected,
   playerColor = '#3b82f6',
   opponentColor = '#ef4444',
+  playerImageUrl,
+  opponentImageUrl,
+  playerInitial = '?',
+  opponentInitial = '?',
 }: BattleGridProps) {
   const playerPulse = useRef(new Animated.Value(1)).current;
   const opponentPulse = useRef(new Animated.Value(1)).current;
   const attackLineOpacity = useRef(new Animated.Value(0)).current;
+  const playerAttackOffset = useRef(new Animated.Value(0)).current;
+  const opponentShake = useRef(new Animated.Value(0)).current;
 
   // Idle pulse loops
   useEffect(() => {
     Animated.loop(
       Animated.sequence([
-        Animated.timing(playerPulse, { toValue: 1.15, duration: 1600, useNativeDriver: true }),
-        Animated.timing(playerPulse, { toValue: 1, duration: 1600, useNativeDriver: true }),
+        Animated.timing(playerPulse, { toValue: 1.04, duration: 2000, useNativeDriver: true }),
+        Animated.timing(playerPulse, { toValue: 1, duration: 2000, useNativeDriver: true }),
       ])
     ).start();
     const t = setTimeout(() => {
       Animated.loop(
         Animated.sequence([
-          Animated.timing(opponentPulse, { toValue: 1.15, duration: 1900, useNativeDriver: true }),
-          Animated.timing(opponentPulse, { toValue: 1, duration: 1900, useNativeDriver: true }),
+          Animated.timing(opponentPulse, { toValue: 1.04, duration: 2000, useNativeDriver: true }),
+          Animated.timing(opponentPulse, { toValue: 1, duration: 2000, useNativeDriver: true }),
         ])
       ).start();
     }, 800);
     return () => clearTimeout(t);
   }, []);
 
-  // Attack line flash when lastAttack changes
+  // Attack line flash + character animation on attack
   useEffect(() => {
     if (!lastAttackFrom || !lastAttackTo) return;
     attackLineOpacity.setValue(0);
@@ -72,9 +85,26 @@ export function BattleGrid({
       Animated.timing(attackLineOpacity, { toValue: 1, duration: 120, useNativeDriver: true }),
       Animated.timing(attackLineOpacity, { toValue: 0, duration: 500, useNativeDriver: true }),
     ]).start();
+
+    // Attacker lunges toward opponent (8px), then snaps back
+    const direction = lastAttackFrom.x < lastAttackTo.x ? 8 : -8;
+    Animated.sequence([
+      Animated.timing(playerAttackOffset, { toValue: direction, duration: 100, useNativeDriver: true }),
+      Animated.timing(playerAttackOffset, { toValue: 0, duration: 180, useNativeDriver: true }),
+    ]).start();
+
+    // Defender shakes on hit
+    if (attackConnected) {
+      Animated.sequence([
+        Animated.timing(opponentShake, { toValue: 4, duration: 60, useNativeDriver: true }),
+        Animated.timing(opponentShake, { toValue: -4, duration: 60, useNativeDriver: true }),
+        Animated.timing(opponentShake, { toValue: 4, duration: 60, useNativeDriver: true }),
+        Animated.timing(opponentShake, { toValue: 0, duration: 60, useNativeDriver: true }),
+      ]).start();
+    }
   }, [lastAttackFrom, lastAttackTo]);
 
-  // Compute attack line geometry (centered rotation in absolute overlay)
+  // Compute attack line geometry
   let attackLine: { midX: number; midY: number; length: number; angle: number } | null = null;
   if (lastAttackFrom && lastAttackTo) {
     const x1 = (lastAttackFrom.x - 1) * CELL + CELL / 2;
@@ -93,8 +123,15 @@ export function BattleGrid({
 
   const highlightMap = new Map(highlightedCells.map((h) => [`${h.x},${h.y}`, h.type]));
 
+  // Compute absolute pixel positions for character images
+  const playerCellX = (playerPos.x - 1) * CELL + CELL / 2;
+  const playerCellY = (playerPos.y - 1) * CELL + CELL / 2;
+  const opponentCellX = (opponentPos.x - 1) * CELL + CELL / 2;
+  const opponentCellY = (opponentPos.y - 1) * CELL + CELL / 2;
+
   return (
     <View style={styles.gridContainer}>
+      {/* ── Grid cells ── */}
       {Array.from({ length: ROWS }, (_, rowIdx) => (
         <View key={rowIdx} style={styles.row}>
           {Array.from({ length: COLS }, (_, colIdx) => {
@@ -102,8 +139,6 @@ export function BattleGrid({
             const y = rowIdx + 1;
             const hlType = highlightMap.get(`${x},${y}`);
             const isTargeted = targetCell?.x === x && targetCell?.y === y;
-            const hasPlayer = playerPos.x === x && playerPos.y === y;
-            const hasOpponent = opponentPos.x === x && opponentPos.y === y;
 
             return (
               <TouchableOpacity
@@ -116,30 +151,70 @@ export function BattleGrid({
                 ]}
                 onPress={() => onCellPress({ x, y })}
                 activeOpacity={hlType || isTargeted ? 0.65 : 1}
-              >
-                {hasPlayer && (
-                  <Animated.View
-                    style={[
-                      styles.marker,
-                      { backgroundColor: playerColor, transform: [{ scale: playerPulse }] },
-                    ]}
-                  />
-                )}
-                {hasOpponent && (
-                  <Animated.View
-                    style={[
-                      styles.marker,
-                      { backgroundColor: opponentColor, transform: [{ scale: opponentPulse }] },
-                    ]}
-                  />
-                )}
-              </TouchableOpacity>
+              />
             );
           })}
         </View>
       ))}
 
-      {/* Attack line overlay */}
+      {/* ── Player character image (absolute, above cells) ── */}
+      <Animated.View
+        pointerEvents="none"
+        style={[
+          styles.characterAnchor,
+          {
+            left: playerCellX - CHAR_WIDTH / 2,
+            top: playerCellY - CHAR_HEIGHT,
+            transform: [
+              { scale: playerPulse },
+              { translateX: playerAttackOffset },
+            ],
+          },
+        ]}
+      >
+        {playerImageUrl ? (
+          <Image
+            source={{ uri: playerImageUrl }}
+            style={styles.characterImage}
+            resizeMode="contain"
+          />
+        ) : (
+          <View style={[styles.characterPlaceholder, { borderColor: playerColor + '88', backgroundColor: playerColor + '18' }]}>
+            <Text style={[styles.characterInitial, { color: playerColor }]}>{playerInitial}</Text>
+          </View>
+        )}
+      </Animated.View>
+
+      {/* ── Opponent character image (absolute, mirrored) ── */}
+      <Animated.View
+        pointerEvents="none"
+        style={[
+          styles.characterAnchor,
+          {
+            left: opponentCellX - CHAR_WIDTH / 2,
+            top: opponentCellY - CHAR_HEIGHT,
+            transform: [
+              { scaleX: -1 },
+              { scale: opponentPulse },
+              { translateX: opponentShake },
+            ],
+          },
+        ]}
+      >
+        {opponentImageUrl ? (
+          <Image
+            source={{ uri: opponentImageUrl }}
+            style={styles.characterImage}
+            resizeMode="contain"
+          />
+        ) : (
+          <View style={[styles.characterPlaceholder, { borderColor: opponentColor + '88', backgroundColor: opponentColor + '18' }]}>
+            <Text style={[styles.characterInitial, { color: opponentColor }]}>{opponentInitial}</Text>
+          </View>
+        )}
+      </Animated.View>
+
+      {/* ── Attack line overlay ── */}
       {attackLine && (
         <Animated.View
           pointerEvents="none"
@@ -179,8 +254,6 @@ const styles = StyleSheet.create({
     height: CELL,
     borderWidth: 0.5,
     borderColor: '#0a1628',
-    justifyContent: 'center',
-    alignItems: 'center',
   },
   cellMove: {
     backgroundColor: 'rgba(59,130,246,0.18)',
@@ -195,10 +268,26 @@ const styles = StyleSheet.create({
     borderColor: '#ca8a04',
     borderWidth: 1.5,
   },
-  marker: {
-    width: 20,
-    height: 20,
-    borderRadius: 10,
+  characterAnchor: {
+    position: 'absolute',
+    width: CHAR_WIDTH,
+    height: CHAR_HEIGHT,
+  },
+  characterImage: {
+    width: CHAR_WIDTH,
+    height: CHAR_HEIGHT,
+  },
+  characterPlaceholder: {
+    width: CHAR_WIDTH,
+    height: CHAR_HEIGHT,
+    borderRadius: 8,
+    borderWidth: 1.5,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  characterInitial: {
+    fontSize: 22,
+    fontWeight: '800',
   },
   attackLine: {
     position: 'absolute',

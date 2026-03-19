@@ -1,5 +1,5 @@
 # Arch:Genesis — Cypher System Reference
-Last updated: 2026-03-16
+Last updated: 2026-03-17
 
 ## Genesis Wizard Steps
 1. Sketch — optional drawing + cypher visual description for image generation
@@ -127,5 +127,80 @@ Defense Rating bar color: blue
 Special Range bar color: purple
 Initiative bar color: yellow
 
+## Pose System
+
+### Image Hierarchy (fallback chain)
+Battle grid always uses this priority order:
+1. Pose-specific directional URL (attackRightUrl, defendLeftUrl, etc.)
+2. Default directional URL (imageRightUrl or imageLeftUrl)
+3. Main identity image (imageUrl)
+4. Letter placeholder
+
+### Grid Facing Rules
+- Player side: always use _right variants
+- Opponent side: always use _left variants
+- Opponent image rendered with `scaleX: -1` transform as additional facing correction
+
+### Generation Pipeline
+1. User selects variant from 3 Grok Imagine text-to-image options
+2. `generationPrompt` and `generationSeed` saved to wizard state at variant selection
+3. `generateDirectionalImages` runs SEQUENTIALLY at cypher creation end (not at image selection)
+   - Front facing (strength 0.25, seed)
+   - Right facing (strength 0.25, seed+1)
+   - Left facing (strength 0.25, seed+2)
+4. `removeBackgroundSequential` runs on all 3 directional results
+5. All 3 uploaded to Supabase Storage at `cypher-images/{userId}/{cypherId}/`
+6. `generation_prompt` and `generation_seed` saved to cyphers table for future pose consistency
+7. Cypher creation loading screen shows progressive status text during this phase
+
+### Default Battle Pose Timing
+The left and right default battle poses are generated ONLY at the end of cypher creation (the "Complete Genesis" step), NOT when the user selects an image variant. This means the creation loading screen will remain active until both directional images are fully generated and uploaded.
+
+### Pose Generation (Attack / Defend)
+- Uses `generatePoseImage` function in `lib/falClient.ts`
+- Attack pose: uses `kit.basicAttack` as pose description
+- Defend pose: uses `kit.defense` as pose description
+- Strength 0.3 — slightly more deviation than directionals for expressive poses
+- Sequential generation: right then left
+- Background removal runs on each result
+- Available from Pose Hub on the cypher sheet (Poses tab)
+
+### Pose Trigger Timing in Battle
+- Attack pose: shows for 2 seconds when player executes an attack move
+- Defend pose: shows for 2 seconds when player executes a defensive move
+- Opponent pose determined by parsing opponent_move text from Framework Master
+- After 2 seconds both sides return to idle directional image
+
+### Pose Hub (Cypher Sheet → Poses Tab)
+- Toggle between Sheet and Poses views using the tab bar at the top of the main display
+- DEFAULT BATTLE POSES section: shows front, right (player), left (opponent) — auto-generated at creation
+- ATTACK POSE section: generate button → right and left angle images
+- DEFEND POSE section: generate button → right and left angle images
+- Generation requires `imageUrl`, `generationPrompt`, and `generationSeed` to be set (Genesis Wizard cyphers only)
+- Seed cyphers without these fields will see the generation button disabled
+
+### Database Columns (cyphers table)
+| Column | Purpose |
+|--------|---------|
+| `image_url` | Primary identity image (front-facing, shown on sheet) |
+| `image_front_url` | Explicit front-facing battle pose |
+| `image_right_url` | Right-facing battle pose (player side on grid) |
+| `image_left_url` | Left-facing battle pose (opponent side on grid) |
+| `attack_right_url` | Attack pose facing right |
+| `attack_left_url` | Attack pose facing left |
+| `defend_right_url` | Defend pose facing right |
+| `defend_left_url` | Defend pose facing left |
+| `generation_prompt` | Full prompt used for initial generation |
+| `generation_seed` | Seed used for initial generation |
+| `poses_generated_at` | Timestamp when directional poses were created |
+
+### Current Pose Types
+- idle (default directional)
+- attack
+- defend
+
+(Planned: special, victory, defeat, finisher)
+
 ## Version History
 v1.0 — Initial stat system. Removed Material and Visual Style from structure. Added 6 core stats with bonus point allocation. Grid system 13x7.
+v1.1 — Pose system. Directional battle poses (front/right/left) generated at cypher creation. Attack and defend poses generated on demand from Pose Hub. Grid renders PNG character images with facing. Battle screen tracks pose state per turn.

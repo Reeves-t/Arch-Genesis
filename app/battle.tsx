@@ -54,6 +54,7 @@ type BattlePhase = 'matchmaking' | 'battle' | 'end';
 type TurnPhase = 'player_select' | 'opponent_thinking' | 'resolving' | 'narrating';
 type InitiativeWinner = 'player' | 'opponent';
 type MoveHighlightType = 'move' | 'attack';
+type PoseType = 'idle' | 'attack' | 'defend';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -72,6 +73,27 @@ const COMBAT_COLORS: Record<string, string> = {
 
 function getCypherColor(cypher: Cypher): string {
   return COMBAT_COLORS[cypher.combatStyle] ?? '#3b82f6';
+}
+
+function getCypherImage(
+  cypher: Cypher,
+  side: 'player' | 'opponent',
+  currentPose: PoseType
+): string | null {
+  switch (currentPose) {
+    case 'attack':
+      return side === 'player'
+        ? cypher.attackRightUrl ?? cypher.imageRightUrl ?? cypher.imageUrl ?? null
+        : cypher.attackLeftUrl ?? cypher.imageLeftUrl ?? cypher.imageUrl ?? null;
+    case 'defend':
+      return side === 'player'
+        ? cypher.defendRightUrl ?? cypher.imageRightUrl ?? cypher.imageUrl ?? null
+        : cypher.defendLeftUrl ?? cypher.imageLeftUrl ?? cypher.imageUrl ?? null;
+    default:
+      return side === 'player'
+        ? cypher.imageRightUrl ?? cypher.imageUrl ?? null
+        : cypher.imageLeftUrl ?? cypher.imageUrl ?? null;
+  }
 }
 
 function buildBattlePhase(turn: number): string {
@@ -302,6 +324,10 @@ export default function BattleScreen() {
   const [lastAttackFrom, setLastAttackFrom] = useState<GridPos | null>(null);
   const [lastAttackTo, setLastAttackTo] = useState<GridPos | null>(null);
   const [attackConnected, setAttackConnected] = useState(false);
+
+  // ── Pose state ───────────────────────────────────────────────────────────
+  const [playerPose, setPlayerPose] = useState<PoseType>('idle');
+  const [opponentPose, setOpponentPose] = useState<PoseType>('idle');
 
   // ── Narration state ──────────────────────────────────────────────────────
   const [narrationLines, setNarrationLines] = useState<NarratedLine[]>([]);
@@ -577,6 +603,22 @@ export default function BattleScreen() {
       setPlayerPos(newPlayerPos);
       setOpponentPos(newOpponentPos);
 
+      // Determine pose based on selected move description
+      const moveDesc = selectedMove.action_description.toLowerCase();
+      const kit = playerCypher.kit;
+      const isDefensiveMove = moveDesc.includes(kit.defense.toLowerCase()) || moveDesc.includes(kit.passive.toLowerCase());
+      const playerMovePose: PoseType = isDefensiveMove ? 'defend' : 'attack';
+      setPlayerPose(playerMovePose);
+      setTimeout(() => setPlayerPose('idle'), 2000);
+
+      // Opponent pose based on their move description
+      const oppMoveDesc = (turnData.opponent_move ?? '').toLowerCase();
+      const oppKit = opponentCypher.kit;
+      const isOppDefensive = oppMoveDesc.includes(oppKit.defense.toLowerCase()) || oppMoveDesc.includes(oppKit.passive.toLowerCase());
+      const opponentMovePose: PoseType = isOppDefensive ? 'defend' : 'attack';
+      setOpponentPose(opponentMovePose);
+      setTimeout(() => setOpponentPose('idle'), 2000);
+
       const { data: narrData } = await supabase.functions.invoke('battle-narrator', {
         body: {
           turn_result: {
@@ -811,6 +853,10 @@ export default function BattleScreen() {
             attackConnected={attackConnected}
             playerColor={playerColor}
             opponentColor={opponentColor}
+            playerImageUrl={getCypherImage(playerCypher, 'player', playerPose)}
+            opponentImageUrl={getCypherImage(opponentCypher, 'opponent', opponentPose)}
+            playerInitial={playerCypher.name.charAt(0).toUpperCase()}
+            opponentInitial={opponentCypher.name.charAt(0).toUpperCase()}
           />
         </View>
 

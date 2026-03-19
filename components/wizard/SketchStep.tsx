@@ -151,6 +151,7 @@ export const SketchStep: React.FC = () => {
   const [isGenerating, setIsGenerating] = useState(false);
   const [generationError, setGenerationError] = useState<string | null>(null);
   const [generatedImages, setGeneratedImages] = useState<string[]>([]);
+  const [generationMeta, setGenerationMeta] = useState<{ prompt: string; seed: number } | null>(null);
   const [selectingOpen, setSelectingOpen] = useState(false);
   const [selectedIndex, setSelectedIndex] = useState<number | null>(null);
 
@@ -201,13 +202,14 @@ export const SketchStep: React.FC = () => {
     setGenerationError(null);
     setGeneratedImages([]);
     try {
-      const urls = await generateCypherImages(visualDescription.trim(), sketchBase64);
-      if (urls.length === 0) {
+      const result = await generateCypherImages(visualDescription.trim(), sketchBase64);
+      if (result.urls.length === 0) {
         setGenerationError('No images returned. Check your API key and try again.');
         setIsGenerating(false);
         return;
       }
-      setGeneratedImages(urls);
+      setGeneratedImages(result.urls);
+      setGenerationMeta({ prompt: result.basePrompt, seed: result.seed });
       setSelectedIndex(null);
       setIsGenerating(false);
       setSelectingOpen(true);
@@ -221,7 +223,11 @@ export const SketchStep: React.FC = () => {
     if (selectedIndex === null) return;
     const url = generatedImages[selectedIndex];
     setSelectedImageUrl(url);
-    updateWizardStep(genesisWizard.step, { selectedImageUrl: url });
+    updateWizardStep(genesisWizard.step, {
+      selectedImageUrl: url,
+      generationPrompt: generationMeta?.prompt ?? undefined,
+      generationSeed: generationMeta?.seed ?? undefined,
+    });
     setSelectingOpen(false);
   };
 
