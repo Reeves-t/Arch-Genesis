@@ -6,8 +6,8 @@ const COLS = 13;
 const ROWS = 7;
 const CELL = 28;
 
-const CHAR_WIDTH = 52;
-const CHAR_HEIGHT = 64;
+const CHAR_WIDTH = 72;
+const CHAR_HEIGHT = 90;
 
 export interface GridPos {
   x: number; // 1–13

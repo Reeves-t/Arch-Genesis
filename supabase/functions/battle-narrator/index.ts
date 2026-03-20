@@ -42,10 +42,12 @@ const NARRATOR_SYSTEM = `You are the Narrator of Arch:Genesis battles, a cinemat
 
 ABSOLUTE RULES:
 - NEVER use em dashes (-- or the character —). Use commas, semicolons, or period breaks instead.
-- Write exactly 4 lines of narration per turn
+- Write exactly 3 lines of narration per turn
 - Each line references one character: "player", "opponent", or "both"
 - Never say "weakness", "finisher", "health points", "HP", "game mechanics", or break the fourth wall
 - Each line is one complete dramatic sentence in present tense
+- Keep each narration line SHORT and PUNCHY. Maximum 15 words per line. Write like a sports ticker not a novel. Each line hits hard and moves on. No long flowing sentences. Short. Sharp. Impactful.
+- Each line must include an "action" tag: "movement" (character repositions on the grid), "attack" (a strike lands or misses), "defense" (a block or dodge), "neutral" (resolving beat, conditions, advantage)
 
 ABILITY NAME INTEGRATION:
 - Reference specific ability names from both cyphers naturally within the prose
@@ -67,9 +69,9 @@ TACTICAL RESPONSIVENESS — use last_turn_context and opponent_move_reasoning:
 - Use opponent_move_reasoning to give the opponent VISIBLE INTENT. "It has learned your rhythm." "It waits for exactly this opening."
 
 STRUCTURE (follow this order every turn):
-1. First line: Who moved first (initiative_winner) — show it through action, not announcement
-2. Middle lines (2): The full exchange, reactions, ability names woven in, opponent's intent visible, spatial details
-3. Final line: Tagged "both". Conclusive round-result beat. Player won: they pressed advantage. Opponent won: they landed better. Draw: brutal even exchange.
+1. First line: Who moved first (initiative_winner) — show it through action, not announcement. Tag as "movement" if they repositioned, "attack" if they struck immediately.
+2. Second line: The key exchange moment — the hit, miss, or block. Tag as "attack" or "defense".
+3. Third line: Tagged "both". Conclusive round-result beat. Player won: they pressed advantage. Opponent won: they landed better. Draw: brutal even exchange. Tag as "neutral".
 
 PHASE TONE:
 - Early (turns 1-2): Atmospheric, fighters establishing presence and style
@@ -181,18 +183,17 @@ ${opponent_move_reasoning ?? 'Opponent made its move.'}
 
 RECENT HISTORY: ${recentHistory || 'Opening exchange.'}
 
-Return exactly this JSON (4 lines, last line always "both"):
+Return exactly this JSON (3 lines, last line always "both", each line max 15 words):
 {
   "narration_lines": [
-    {"line": "Initiative line: first mover commits through action, with spatial detail.", "character": "player"},
-    {"line": "Exchange line weaving in ability names and grid positioning.", "character": "opponent"},
-    {"line": "Reaction or escalation, opponent intent visible, physical movement described.", "character": "player"},
-    {"line": "Conclusive round-result line. Who won the exchange is clear.", "character": "both"}
+    {"line": "First mover commits. Short and punchy.", "character": "player", "action": "movement"},
+    {"line": "The key strike or block lands.", "character": "opponent", "action": "attack"},
+    {"line": "Conclusive beat. Who won the exchange is clear.", "character": "both", "action": "neutral"}
   ],
   "turn_summary": "One sentence factual summary, past tense, no em dashes."
 }`;
 
-    const raw = await callClaude(NARRATOR_SYSTEM, userMsg, 1000);
+    const raw = await callClaude(NARRATOR_SYSTEM, userMsg, 600);
     const result = extractJSON(raw);
 
     return new Response(JSON.stringify(result), {
@@ -203,8 +204,9 @@ Return exactly this JSON (4 lines, last line always "both"):
     return new Response(
       JSON.stringify({
         narration_lines: [
-          { line: 'The combatants clash in a burst of raw energy.', character: 'both' },
-          { line: 'Neither yields ground easily.', character: 'both' },
+          { line: 'The combatants clash in a burst of raw energy.', character: 'both', action: 'movement' },
+          { line: 'Neither yields ground.', character: 'both', action: 'attack' },
+          { line: 'The exchange settles.', character: 'both', action: 'neutral' },
         ],
         turn_summary: 'Turn resolved with an exchange of moves.',
       }),

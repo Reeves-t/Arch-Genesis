@@ -35,21 +35,24 @@ function buildHtml(modelUrl: string, side: 'player' | 'opponent'): string {
     var scene = new THREE.Scene();
 
     var camera = new THREE.PerspectiveCamera(42, window.innerWidth / window.innerHeight, 0.1, 100);
-    camera.position.set(0, 0.6, 2.8);
+    camera.position.set(0, 1.2, 2.5);
     camera.lookAt(0, 0.3, 0);
 
     var renderer = new THREE.WebGLRenderer({ antialias: false, alpha: true });
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setPixelRatio(window.devicePixelRatio * 1.5);
     renderer.setSize(window.innerWidth, window.innerHeight);
     renderer.setClearColor(0x000000, 0);
     renderer.outputEncoding = THREE.sRGBEncoding;
     document.body.appendChild(renderer.domElement);
 
     // Lighting
-    scene.add(new THREE.AmbientLight(0xffffff, 0.7));
+    scene.add(new THREE.AmbientLight(0xffffff, 0.8));
     var key = new THREE.DirectionalLight(0xffffff, 1.0);
     key.position.set(1, 2, 2);
     scene.add(key);
+    var fill = new THREE.DirectionalLight(0xffffff, 0.5);
+    fill.position.set(0, 2, 3);
+    scene.add(fill);
     var rim = new THREE.DirectionalLight(0x4488ff, 0.35);
     rim.position.set(-1, 1, -1);
     scene.add(rim);
@@ -118,8 +121,8 @@ function buildHtml(modelUrl: string, side: 'player' | 'opponent'): string {
 export default function CypherModel3D({
   modelUrl,
   side,
-  width = 52,
-  height = 64,
+  width = 72,
+  height = 90,
 }: CypherModel3DProps) {
   return (
     <View style={{ width, height, overflow: 'hidden' }}>

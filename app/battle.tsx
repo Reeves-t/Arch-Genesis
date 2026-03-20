@@ -37,6 +37,7 @@ interface PlayerOption {
 interface NarratedLine {
   line: string;
   character: 'player' | 'opponent' | 'both';
+  action?: 'movement' | 'attack' | 'defense' | 'neutral';
 }
 
 interface TurnRecord {
@@ -336,6 +337,9 @@ export default function BattleScreen() {
   const [typewriterText, setTypewriterText] = useState('');
   const typewriterRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const narrationScrollRef = useRef<ScrollView>(null);
+  const pendingPlayerPos = useRef<GridPos | null>(null);
+  const pendingOpponentPos = useRef<GridPos | null>(null);
+  const pendingAttackData = useRef<{ from: GridPos; to: GridPos; connected: boolean } | null>(null);
 
   // ── Matchmaking state ─────────────────────────────────────────────────────
   const MATCHMAKING_TEXTS = ['Scanning the Framework...', 'Locating opponent...', 'Preparing battlefield...'];
@@ -426,11 +430,15 @@ export default function BattleScreen() {
     Animated.timing(advantageAnim, { toValue: normalized, duration: 700, useNativeDriver: false }).start();
   }, [advantageScore]);
 
-  // Typewriter effect
+  // Typewriter effect with grid-sync
   useEffect(() => {
     if (battlePhase !== 'battle' || turnPhase !== 'narrating') return;
     if (currentLineIdx >= narrationLines.length) {
       const timeoutId = setTimeout(() => {
+        // Settle final positions for any lines without action tags
+        if (pendingPlayerPos.current) { setPlayerPos(pendingPlayerPos.current); pendingPlayerPos.current = null; }
+        if (pendingOpponentPos.current) { setOpponentPos(pendingOpponentPos.current); pendingOpponentPos.current = null; }
+        pendingAttackData.current = null;
         if (winner) setBattlePhase('end');
         else setTurnPhase('player_select');
       }, 500);
@@ -470,14 +478,27 @@ export default function BattleScreen() {
       if (charIdx >= line.line.length) {
         if (typewriterRef.current) clearInterval(typewriterRef.current);
         const holdTimeout = setTimeout(() => {
+          // Trigger grid action based on action tag
+          if (line.action === 'movement') {
+            if ((line.character === 'player' || line.character === 'both') && pendingPlayerPos.current) {
+              setPlayerPos(pendingPlayerPos.current);
+            }
+            if ((line.character === 'opponent' || line.character === 'both') && pendingOpponentPos.current) {
+              setOpponentPos(pendingOpponentPos.current);
+            }
+          } else if (line.action === 'attack' && pendingAttackData.current) {
+            const { from, to, connected } = pendingAttackData.current;
+            setLastAttackFrom(from);
+            setLastAttackTo(to);
+            setAttackConnected(connected);
+          }
           setCompletedLines((prev) => [...prev, line]);
           setTypewriterText('');
           setCurrentLineIdx((prev) => prev + 1);
-          narrationScrollRef.current?.scrollToEnd({ animated: true });
         }, 600);
         return () => clearTimeout(holdTimeout);
       }
-    }, 26);
+    }, 25);
 
     return () => {
       if (typewriterRef.current) clearInterval(typewriterRef.current);
@@ -593,15 +614,12 @@ export default function BattleScreen() {
       const newOpponentPos: GridPos = turnData.opponent_new_position ?? opponentPos;
       const didConnect: boolean = turnData.attack_connected ?? true;
 
-      // Animate attack line
-      setLastAttackFrom(newPlayerPos);
-      setLastAttackTo(newOpponentPos);
-      setAttackConnected(didConnect);
-
-      // Delay position update for animation
-      await new Promise((res) => setTimeout(res, 300));
-      setPlayerPos(newPlayerPos);
-      setOpponentPos(newOpponentPos);
+      // Store pending data — grid updates are triggered per narration line (synced)
+      pendingPlayerPos.current = newPlayerPos;
+      pendingOpponentPos.current = newOpponentPos;
+      pendingAttackData.current = { from: newPlayerPos, to: newOpponentPos, connected: didConnect };
+      setLastAttackFrom(null);
+      setLastAttackTo(null);
 
       // Determine pose based on selected move description
       const moveDesc = selectedMove.action_description.toLowerCase();
@@ -864,25 +882,24 @@ export default function BattleScreen() {
 
         {/* ── Narration ── */}
         <View style={styles.narrationArea}>
-          <ScrollView
-            ref={narrationScrollRef}
-            style={styles.narrationScroll}
-            contentContainerStyle={styles.narrationContent}
-            showsVerticalScrollIndicator={false}
-          >
-            {turnHistory.map((record) => (
-              <TurnHistoryRow
-                key={record.turn_number}
-                record={record}
-                onToggle={() =>
-                  setTurnHistory((prev) =>
-                    prev.map((r) =>
-                      r.turn_number === record.turn_number ? { ...r, expanded: !r.expanded } : r
+          {turnHistory.length > 0 && (
+            <View style={styles.historySection}>
+              {turnHistory.map((record) => (
+                <TurnHistoryRow
+                  key={record.turn_number}
+                  record={record}
+                  onToggle={() =>
+                    setTurnHistory((prev) =>
+                      prev.map((r) =>
+                        r.turn_number === record.turn_number ? { ...r, expanded: !r.expanded } : r
+                      )
                     )
-                  )
-                }
-              />
-            ))}
+                  }
+                />
+              ))}
+            </View>
+          )}
+          <View style={styles.currentNarration}>
             {completedLines.map((line, i) => (
               <Text key={`cur-${i}`} style={styles.narrationDimmed}>
                 {line.line}
@@ -900,7 +917,7 @@ export default function BattleScreen() {
             {turnPhase === 'player_select' && turnHistory.length === 0 && !selectedMove && (
               <Text style={styles.narrationHint}>Choose your opening move.</Text>
             )}
-          </ScrollView>
+          </View>
         </View>
 
         {/* ── Move Cards ── */}
@@ -1050,11 +1067,11 @@ const styles = StyleSheet.create({
   gridHint: { fontSize: 9, fontWeight: '600', color: '#374151', letterSpacing: 1.8, marginBottom: 5 },
 
   // Narration
-  narrationArea: { marginHorizontal: 12, marginTop: 6, height: 80, backgroundColor: '#040c18', borderRadius: 10, borderWidth: 1, borderColor: '#0f1f35' },
-  narrationScroll: { flex: 1 },
-  narrationContent: { padding: 10, gap: 3 },
-  narrationDimmed: { fontSize: 11, color: '#374151', lineHeight: 17, fontStyle: 'italic' },
-  narrationLive: { fontSize: 12, color: '#d1d5db', lineHeight: 20 },
+  narrationArea: { marginHorizontal: 12, marginTop: 6, backgroundColor: '#040c18', borderRadius: 10, borderWidth: 1, borderColor: '#0f1f35', padding: 12 },
+  historySection: { marginBottom: 6 },
+  currentNarration: { gap: 4 },
+  narrationDimmed: { fontSize: 13, color: '#4b5563', lineHeight: 20, fontStyle: 'italic' },
+  narrationLive: { fontSize: 16, fontWeight: '700', color: '#ffffff', lineHeight: 24 },
   narrationHint: { fontSize: 11, color: '#4b5563', fontStyle: 'italic' },
   resolvingRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   resolvingText: { fontSize: 11, color: '#4b5563' },
