@@ -1,5 +1,6 @@
 import React, { useRef, useEffect } from 'react';
 import { View, TouchableOpacity, Animated, StyleSheet, Image, Text } from 'react-native';
+import CypherModel3D from './CypherModel3D';
 
 const COLS = 13;
 const ROWS = 7;
@@ -32,6 +33,8 @@ interface BattleGridProps {
   opponentColor?: string;
   playerImageUrl?: string | null;
   opponentImageUrl?: string | null;
+  playerModelUrl?: string | null;
+  opponentModelUrl?: string | null;
   playerInitial?: string;
   opponentInitial?: string;
 }
@@ -49,6 +52,8 @@ export function BattleGrid({
   opponentColor = '#ef4444',
   playerImageUrl,
   opponentImageUrl,
+  playerModelUrl,
+  opponentModelUrl,
   playerInitial = '?',
   opponentInitial = '?',
 }: BattleGridProps) {
@@ -157,7 +162,7 @@ export function BattleGrid({
         </View>
       ))}
 
-      {/* ── Player character image (absolute, above cells) ── */}
+      {/* ── Player character (absolute, above cells) ── */}
       <Animated.View
         pointerEvents="none"
         style={[
@@ -172,7 +177,14 @@ export function BattleGrid({
           },
         ]}
       >
-        {playerImageUrl ? (
+        {playerModelUrl ? (
+          <CypherModel3D
+            modelUrl={playerModelUrl}
+            side="player"
+            width={CHAR_WIDTH}
+            height={CHAR_HEIGHT}
+          />
+        ) : playerImageUrl ? (
           <Image
             source={{ uri: playerImageUrl }}
             style={styles.characterImage}
@@ -185,7 +197,8 @@ export function BattleGrid({
         )}
       </Animated.View>
 
-      {/* ── Opponent character image (absolute, mirrored) ── */}
+      {/* ── Opponent character (absolute, mirrored) ── */}
+      {/* scaleX: -1 only applied for PNG — 3D model handles facing via rotation.y = Math.PI */}
       <Animated.View
         pointerEvents="none"
         style={[
@@ -193,15 +206,20 @@ export function BattleGrid({
           {
             left: opponentCellX - CHAR_WIDTH / 2,
             top: opponentCellY - CHAR_HEIGHT,
-            transform: [
-              { scaleX: -1 },
-              { scale: opponentPulse },
-              { translateX: opponentShake },
-            ],
+            transform: opponentModelUrl
+              ? [{ scale: opponentPulse }, { translateX: opponentShake }]
+              : [{ scaleX: -1 }, { scale: opponentPulse }, { translateX: opponentShake }],
           },
         ]}
       >
-        {opponentImageUrl ? (
+        {opponentModelUrl ? (
+          <CypherModel3D
+            modelUrl={opponentModelUrl}
+            side="opponent"
+            width={CHAR_WIDTH}
+            height={CHAR_HEIGHT}
+          />
+        ) : opponentImageUrl ? (
           <Image
             source={{ uri: opponentImageUrl }}
             style={styles.characterImage}

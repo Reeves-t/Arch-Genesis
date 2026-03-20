@@ -855,6 +855,8 @@ export default function BattleScreen() {
             opponentColor={opponentColor}
             playerImageUrl={getCypherImage(playerCypher, 'player', playerPose)}
             opponentImageUrl={getCypherImage(opponentCypher, 'opponent', opponentPose)}
+            playerModelUrl={playerCypher.modelUrl ?? null}
+            opponentModelUrl={opponentCypher.modelUrl ?? null}
             playerInitial={playerCypher.name.charAt(0).toUpperCase()}
             opponentInitial={opponentCypher.name.charAt(0).toUpperCase()}
           />
