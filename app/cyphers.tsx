@@ -17,6 +17,7 @@ import { useGameStore } from '../store/useGameStore';
 import { useAuthStore } from '../store/useAuthStore';
 import { supabase } from '../lib/supabase';
 import { generatePoseGLB } from '../lib/falClient';
+import { ModelViewer } from '../components/viewer/ModelViewer';
 import { useEffect } from 'react';
 import { Cypher, CypherStats } from '../types';
 import { STAT_CAPS } from '../lib/statDerivation';
@@ -526,14 +527,30 @@ const PoseHub: React.FC<PoseHubProps> = ({ cypher, onPoseUpdate }) => {
       <Text style={poseStyles.hubTitle}>{cypher.name}</Text>
       <Text style={poseStyles.hubSub}>Pose Library</Text>
 
-      {/* ── Default Battle Poses ── */}
+      {/* ── 3D Character Model ── */}
+      <View style={poseStyles.section}>
+        <Text style={poseStyles.sectionTitle}>3D CHARACTER MODEL</Text>
+        <Text style={poseStyles.sectionSub}>
+          {cypher.modelUrl ? 'Drag to rotate · Pinch to zoom' : 'No 3D model — recreate cypher to generate'}
+        </Text>
+        {cypher.modelUrl ? (
+          <ModelViewer modelUrl={cypher.modelUrl} height={340} autoRotate />
+        ) : (
+          <View style={poseStyles.glbPreview}>
+            <Text style={poseStyles.glbIcon}>⬡</Text>
+            <Text style={[poseStyles.glbReadyText, { color: '#4b5563' }]}>No model available</Text>
+          </View>
+        )}
+      </View>
+
+      {/* ── Default Battle Poses (Legacy PNG) ── */}
       <View style={poseStyles.section}>
         <Text style={poseStyles.sectionTitle}>DEFAULT BATTLE POSES</Text>
-        <Text style={poseStyles.sectionSub}>Auto-generated at creation, free for all cyphers</Text>
+        <Text style={poseStyles.sectionSub}>Legacy PNG directional sprites (older cyphers only)</Text>
         <View style={poseStyles.poseRow}>
           <PoseCard label="Front" imageUrl={cypher.imageFrontUrl ?? cypher.imageUrl ?? null} />
-          <PoseCard label="Right (Player)" imageUrl={cypher.imageRightUrl ?? null} />
-          <PoseCard label="Left (Opponent)" imageUrl={cypher.imageLeftUrl ?? null} />
+          <PoseCard label="Right" imageUrl={cypher.imageRightUrl ?? null} />
+          <PoseCard label="Left" imageUrl={cypher.imageLeftUrl ?? null} />
         </View>
       </View>
 
