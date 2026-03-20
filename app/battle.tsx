@@ -11,6 +11,7 @@ import {
   Dimensions,
   ActivityIndicator,
 } from 'react-native';
+import { WebView } from 'react-native-webview';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, router } from 'expo-router';
 import { useGameStore } from '../store/useGameStore';
@@ -40,6 +41,32 @@ interface NarratedLine {
   action?: 'movement' | 'attack' | 'defense' | 'neutral';
 }
 
+// Direction helpers (path movement)
+function getDirectionBetween(from: { x: number; y: number }, to: { x: number; y: number }): string {
+  const dx = to.x - from.x;
+  const dy = to.y - from.y;
+  if (dx > 0 && dy === 0) return 'right';
+  if (dx < 0 && dy === 0) return 'left';
+  if (dx === 0 && dy < 0) return 'up';
+  if (dx === 0 && dy > 0) return 'down';
+  if (dx > 0 && dy < 0) return 'up-right';
+  if (dx > 0 && dy > 0) return 'down-right';
+  if (dx < 0 && dy < 0) return 'up-left';
+  if (dx < 0 && dy > 0) return 'down-left';
+  return 'right';
+}
+
+function getRotationForDirection(direction: string, side: 'player' | 'opponent'): number {
+  const rotations: Record<string, number> = {
+    right: 0, left: Math.PI, up: -Math.PI * 0.5, down: Math.PI * 0.5,
+    'up-right': -Math.PI * 0.25, 'down-right': Math.PI * 0.25,
+    'up-left': -Math.PI * 0.75, 'down-left': Math.PI * 0.75,
+  };
+  let rot = rotations[direction] ?? 0;
+  if (side === 'opponent') rot = rot + Math.PI;
+  return rot;
+}
+
 interface TurnRecord {
   turn_number: number;
   player_move: string;
@@ -52,7 +79,7 @@ interface TurnRecord {
 }
 
 type BattlePhase = 'matchmaking' | 'battle' | 'end';
-type TurnPhase = 'player_select' | 'opponent_thinking' | 'resolving' | 'narrating';
+type TurnPhase = 'move' | 'action' | 'resolving' | 'narrating';
 type InitiativeWinner = 'player' | 'opponent';
 type MoveHighlightType = 'move' | 'attack';
 type PoseType = 'idle' | 'attack' | 'defend';
@@ -294,6 +321,36 @@ const histStyles = StyleSheet.create({
   line: { fontSize: 11, color: '#374151', lineHeight: 16, fontStyle: 'italic' },
 });
 
+// ─── PhaseIndicator ───────────────────────────────────────────────────────────
+
+function PhaseIndicator({ phase }: { phase: TurnPhase }) {
+  const active = phase === 'move' ? 'move' : phase === 'action' ? 'action' : 'execute';
+  return (
+    <View style={phaseStyles.row}>
+      <View style={[phaseStyles.step, active === 'move' && phaseStyles.activeStep]}>
+        <Text style={[phaseStyles.stepText, active === 'move' && phaseStyles.activeText]}>MOVE</Text>
+      </View>
+      <Text style={phaseStyles.arrow}>›</Text>
+      <View style={[phaseStyles.step, active === 'action' && phaseStyles.activeStep]}>
+        <Text style={[phaseStyles.stepText, active === 'action' && phaseStyles.activeText]}>ACTION</Text>
+      </View>
+      <Text style={phaseStyles.arrow}>›</Text>
+      <View style={[phaseStyles.step, active === 'execute' && phaseStyles.activeStep]}>
+        <Text style={[phaseStyles.stepText, active === 'execute' && phaseStyles.activeText]}>EXECUTE</Text>
+      </View>
+    </View>
+  );
+}
+
+const phaseStyles = StyleSheet.create({
+  row: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 4 },
+  step: { paddingHorizontal: 8, paddingVertical: 3, borderRadius: 4, borderWidth: 1, borderColor: '#1e3a5f', backgroundColor: '#030a14' },
+  activeStep: { borderColor: '#3b82f6', backgroundColor: '#071428' },
+  stepText: { fontSize: 9, fontWeight: '700', color: '#374151', letterSpacing: 1.5 },
+  activeText: { color: '#60a5fa' },
+  arrow: { fontSize: 10, color: '#1e3a5f' },
+});
+
 // ─── Main Screen ──────────────────────────────────────────────────────────────
 
 export default function BattleScreen() {
@@ -310,7 +367,7 @@ export default function BattleScreen() {
   const [opponentCondition, setOpponentCondition] = useState('Stable');
   const [playerOptions, setPlayerOptions] = useState<PlayerOption[]>([]);
   const [turnHistory, setTurnHistory] = useState<TurnRecord[]>([]);
-  const [turnPhase, setTurnPhase] = useState<TurnPhase>('player_select');
+  const [turnPhase, setTurnPhase] = useState<TurnPhase>('move');
   const [winner, setWinner] = useState<string | null>(null);
   const [initiativeWinner, setInitiativeWinner] = useState<InitiativeWinner>('player');
   const [showInitiativeBanner, setShowInitiativeBanner] = useState(false);
@@ -318,6 +375,8 @@ export default function BattleScreen() {
   // ── Grid state ────────────────────────────────────────────────────────────
   const [playerPos, setPlayerPos] = useState<GridPos>({ x: 1, y: 4 });
   const [opponentPos, setOpponentPos] = useState<GridPos>({ x: 13, y: 4 });
+  const [movementPath, setMovementPath] = useState<GridPos[]>([]);
+  const [moveDestination, setMoveDestination] = useState<GridPos | null>(null);
   const [selectedMove, setSelectedMove] = useState<PlayerOption | null>(null);
   const [highlightedCells, setHighlightedCells] = useState<HighlightedCell[]>([]);
   const [targetCell, setTargetCell] = useState<GridPos | null>(null);
@@ -340,6 +399,8 @@ export default function BattleScreen() {
   const pendingPlayerPos = useRef<GridPos | null>(null);
   const pendingOpponentPos = useRef<GridPos | null>(null);
   const pendingAttackData = useRef<{ from: GridPos; to: GridPos; connected: boolean } | null>(null);
+  const playerWebViewRef = useRef<WebView>(null);
+  const opponentWebViewRef = useRef<WebView>(null);
 
   // ── Matchmaking state ─────────────────────────────────────────────────────
   const MATCHMAKING_TEXTS = ['Scanning the Framework...', 'Locating opponent...', 'Preparing battlefield...'];
@@ -406,7 +467,7 @@ export default function BattleScreen() {
         setInitiativeWinner(initWinner);
         setShowInitiativeBanner(true);
         setBattlePhase('battle');
-        setTurnPhase('player_select');
+        setTurnPhase('move');
       } catch (err) {
         console.warn('NPC generation failed, using fallback:', err);
         const npc = buildFallbackNPC();
@@ -419,7 +480,7 @@ export default function BattleScreen() {
         setInitiativeWinner(initWinner);
         setShowInitiativeBanner(true);
         setBattlePhase('battle');
-        setTurnPhase('player_select');
+        setTurnPhase('move');
       }
     };
     run();
@@ -440,7 +501,11 @@ export default function BattleScreen() {
         if (pendingOpponentPos.current) { setOpponentPos(pendingOpponentPos.current); pendingOpponentPos.current = null; }
         pendingAttackData.current = null;
         if (winner) setBattlePhase('end');
-        else setTurnPhase('player_select');
+        else {
+          setMovementPath([]);
+          setMoveDestination(null);
+          setTurnPhase('move');
+        }
       }, 500);
       return () => clearTimeout(timeoutId);
     }
@@ -540,22 +605,24 @@ export default function BattleScreen() {
 
   const handlePickMove = useCallback(
     (option: PlayerOption) => {
-      if (turnPhase !== 'player_select' || !playerCypher || !opponentCypher) return;
+      if (turnPhase !== 'action' || !playerCypher || !opponentCypher) return;
       setShowInitiativeBanner(false);
       setSelectedMove(option);
       setTargetCell(null);
       setExecuteReady(false);
-      const cells = computeHighlights(option, playerCypher, playerPos, opponentPos);
+      // Recalculate from movement destination (where player will be when attacking)
+      const fromPos = moveDestination ?? playerPos;
+      const cells = computeHighlights(option, playerCypher, fromPos, opponentPos);
       setHighlightedCells(cells);
     },
-    [turnPhase, playerCypher, opponentCypher, playerPos, opponentPos]
+    [turnPhase, playerCypher, opponentCypher, playerPos, opponentPos, moveDestination]
   );
 
   // ── Phase 2: Pick a target cell ───────────────────────────────────────────
 
   const handleCellPress = useCallback(
     (pos: GridPos) => {
-      if (!selectedMove || turnPhase !== 'player_select') return;
+      if (!selectedMove || turnPhase !== 'action') return;
       const isHighlighted = highlightedCells.some((h) => h.x === pos.x && h.y === pos.y);
       if (!isHighlighted) return;
       setTargetCell(pos);
@@ -563,6 +630,70 @@ export default function BattleScreen() {
     },
     [selectedMove, highlightedCells, turnPhase]
   );
+
+  // ── Path movement helpers ─────────────────────────────────────────────────
+
+  const sendMessageToModelWebView = useCallback((side: 'player' | 'opponent', message: object) => {
+    const ref = side === 'player' ? playerWebViewRef : opponentWebViewRef;
+    const msgStr = JSON.stringify(message);
+    ref.current?.injectJavaScript(
+      `(function(){ try { window.dispatchEvent(new MessageEvent('message', { data: ${JSON.stringify(msgStr)} })); } catch(e){} })(); true;`
+    );
+  }, []);
+
+  const animateMarkerToPosition = useCallback((pos: GridPos, side: 'player' | 'opponent'): Promise<void> => {
+    return new Promise(resolve => {
+      if (side === 'player') setPlayerPos(pos);
+      else setOpponentPos(pos);
+      setTimeout(resolve, 220);
+    });
+  }, []);
+
+  const animateModelAlongPath = useCallback(async (path: GridPos[], side: 'player' | 'opponent'): Promise<void> => {
+    if (path.length <= 1) {
+      if (path.length === 1) {
+        if (side === 'player') setPlayerPos(path[0]);
+        else setOpponentPos(path[0]);
+      }
+      return;
+    }
+    for (let i = 1; i < path.length; i++) {
+      const from = path[i - 1];
+      const to = path[i];
+      const dir = getDirectionBetween(from, to);
+      const rot = getRotationForDirection(dir, side);
+      sendMessageToModelWebView(side, { type: 'UPDATE_ROTATION', rotation: rot });
+      await animateMarkerToPosition(to, side);
+      if (i < path.length - 1) await new Promise(r => setTimeout(r, 80));
+    }
+  }, [sendMessageToModelWebView, animateMarkerToPosition]);
+
+  // ── Phase: handlePathUpdate / handleMoveConfirmed / handleSkipMove ─────────
+
+  const handlePathUpdate = useCallback((path: GridPos[]) => {
+    setMovementPath(path);
+  }, []);
+
+  const handleMoveConfirmed = useCallback((destination: GridPos) => {
+    setMoveDestination(destination);
+    setMovementPath(prev => (prev.length > 0 ? prev : [destination]));
+    setTurnPhase('action');
+    // Clear any stale action highlights
+    setHighlightedCells([]);
+    setSelectedMove(null);
+    setTargetCell(null);
+    setExecuteReady(false);
+  }, []);
+
+  const handleSkipMove = useCallback(() => {
+    setMoveDestination(playerPos);
+    setMovementPath([playerPos]);
+    setTurnPhase('action');
+    setHighlightedCells([]);
+    setSelectedMove(null);
+    setTargetCell(null);
+    setExecuteReady(false);
+  }, [playerPos]);
 
   // ── Phase 3: Execute turn ─────────────────────────────────────────────────
 
@@ -572,13 +703,13 @@ export default function BattleScreen() {
     setExecuteReady(false);
     setHighlightedCells([]);
     setTargetCell(null);
-    setTurnPhase('opponent_thinking');
-
-    await new Promise((res) => setTimeout(res, 1400));
     setTurnPhase('resolving');
+
+    await new Promise((res) => setTimeout(res, 800));
 
     try {
       const bPhase = buildBattlePhase(currentTurn);
+      const finalPlayerPos = moveDestination ?? playerPos;
 
       const { data: turnData, error: turnError } = await supabase.functions.invoke(
         'battle-framework-master',
@@ -587,7 +718,7 @@ export default function BattleScreen() {
             mode: 'resolve_turn',
             player_cypher: playerCypher,
             opponent_cypher: opponentCypher,
-            player_position: playerPos,
+            player_position: finalPlayerPos,
             opponent_position: opponentPos,
             target_cell: targetCell,
             advantage_score: advantageScore,
@@ -603,38 +734,51 @@ export default function BattleScreen() {
             player_selected_move: selectedMove.action_description,
             battle_phase: bPhase,
             initiative_winner: initiativeWinner,
+            player_move_path: movementPath,
+            player_final_position: finalPlayerPos,
           },
         }
       );
 
       if (turnError || !turnData) throw turnError ?? new Error('No turn data');
 
-      // Update positions from AI response
-      const newPlayerPos: GridPos = turnData.player_new_position ?? playerPos;
+      const newPlayerPos: GridPos = turnData.player_new_position ?? finalPlayerPos;
       const newOpponentPos: GridPos = turnData.opponent_new_position ?? opponentPos;
       const didConnect: boolean = turnData.attack_connected ?? true;
 
-      // Store pending data — grid updates are triggered per narration line (synced)
+      // Store pending for narration-synced attack animation
       pendingPlayerPos.current = newPlayerPos;
       pendingOpponentPos.current = newOpponentPos;
-      pendingAttackData.current = { from: newPlayerPos, to: newOpponentPos, connected: didConnect };
+      pendingAttackData.current = { from: finalPlayerPos, to: newOpponentPos, connected: didConnect };
       setLastAttackFrom(null);
       setLastAttackTo(null);
 
-      // Determine pose based on selected move description
+      // Animate player along traced path first
+      if (movementPath.length > 1) {
+        await animateModelAlongPath(movementPath, 'player');
+      } else if (finalPlayerPos.x !== playerPos.x || finalPlayerPos.y !== playerPos.y) {
+        await animateMarkerToPosition(finalPlayerPos, 'player');
+      }
+
+      // Animate opponent along their AI path
+      const oppPath: GridPos[] | undefined = turnData.opponent_move_path;
+      if (oppPath && Array.isArray(oppPath) && oppPath.length > 1) {
+        await animateModelAlongPath(oppPath, 'opponent');
+      } else {
+        await animateMarkerToPosition(newOpponentPos, 'opponent');
+      }
+
+      // Pose
       const moveDesc = selectedMove.action_description.toLowerCase();
       const kit = playerCypher.kit;
       const isDefensiveMove = moveDesc.includes(kit.defense.toLowerCase()) || moveDesc.includes(kit.passive.toLowerCase());
-      const playerMovePose: PoseType = isDefensiveMove ? 'defend' : 'attack';
-      setPlayerPose(playerMovePose);
+      setPlayerPose(isDefensiveMove ? 'defend' : 'attack');
       setTimeout(() => setPlayerPose('idle'), 2000);
 
-      // Opponent pose based on their move description
       const oppMoveDesc = (turnData.opponent_move ?? '').toLowerCase();
       const oppKit = opponentCypher.kit;
       const isOppDefensive = oppMoveDesc.includes(oppKit.defense.toLowerCase()) || oppMoveDesc.includes(oppKit.passive.toLowerCase());
-      const opponentMovePose: PoseType = isOppDefensive ? 'defend' : 'attack';
-      setOpponentPose(opponentMovePose);
+      setOpponentPose(isOppDefensive ? 'defend' : 'attack');
       setTimeout(() => setOpponentPose('idle'), 2000);
 
       const { data: narrData } = await supabase.functions.invoke('battle-narrator', {
@@ -647,6 +791,9 @@ export default function BattleScreen() {
             player_new_position: newPlayerPos,
             opponent_new_position: newOpponentPos,
             attack_connected: didConnect,
+            player_move_path: movementPath,
+            opponent_move_path: turnData.opponent_move_path ?? null,
+            attack_missed_reason: turnData.attack_missed_reason ?? null,
           },
           player_cypher: playerCypher,
           opponent_cypher: opponentCypher,
@@ -679,7 +826,7 @@ export default function BattleScreen() {
       if (isBattleOver) setWinner(battleWinner);
 
       const lines: NarratedLine[] = narrData?.narration_lines ?? [
-        { line: 'The battle continues.', character: 'both' },
+        { line: 'The battle continues.', character: 'both', action: 'neutral' },
       ];
 
       const record: TurnRecord = {
@@ -695,6 +842,8 @@ export default function BattleScreen() {
       setTurnHistory((prev) => [...prev, record]);
       setCurrentTurn((prev) => prev + 1);
       setSelectedMove(null);
+      setMovementPath([]);
+      setMoveDestination(null);
 
       setNarrationLines(lines);
       setCompletedLines([]);
@@ -703,12 +852,16 @@ export default function BattleScreen() {
       setTurnPhase('narrating');
     } catch (err) {
       console.warn('Turn error:', err);
-      setTurnPhase('player_select');
+      setTurnPhase('move');
       setSelectedMove(null);
+      setMovementPath([]);
+      setMoveDestination(null);
     }
   }, [
     executeReady, selectedMove, targetCell, opponentCypher, playerCypher,
-    playerPos, opponentPos, advantageScore, currentTurn, turnHistory, initiativeWinner,
+    playerPos, opponentPos, movementPath, moveDestination, advantageScore,
+    currentTurn, turnHistory, initiativeWinner,
+    animateModelAlongPath, animateMarkerToPosition,
   ]);
 
   // ── Advantage bar interpolations ──────────────────────────────────────────
@@ -756,9 +909,8 @@ export default function BattleScreen() {
 
   const playerColor = getCypherColor(playerCypher);
   const opponentColor = getCypherColor(opponentCypher);
-  const isWaitingForMove = turnPhase === 'player_select' && !selectedMove;
-  const isWaitingForTarget = turnPhase === 'player_select' && !!selectedMove && !executeReady;
-  const canExecute = turnPhase === 'player_select' && executeReady;
+  const canExecute = turnPhase === 'action' && executeReady;
+  const playerMovementSpeed = playerCypher.stats?.movement_speed ?? 3;
 
   const initiativeBannerText =
     initiativeWinner === 'player'
@@ -851,15 +1003,7 @@ export default function BattleScreen() {
 
         {/* ── Battle Grid ── */}
         <View style={styles.gridSection}>
-          {/* Phase hint above grid */}
-          <Text style={styles.gridHint}>
-            {isWaitingForMove && 'SELECT A MOVE'}
-            {isWaitingForTarget && 'TAP A HIGHLIGHTED CELL'}
-            {canExecute && 'READY — TAP EXECUTE'}
-            {turnPhase === 'opponent_thinking' && '● OPPONENT CHOOSING'}
-            {turnPhase === 'resolving' && '◦ RESOLVING TURN'}
-            {turnPhase === 'narrating' && '◦ NARRATING'}
-          </Text>
+          <PhaseIndicator phase={turnPhase} />
           <BattleGrid
             playerPos={playerPos}
             opponentPos={opponentPos}
@@ -877,6 +1021,14 @@ export default function BattleScreen() {
             opponentModelUrl={opponentCypher.modelUrl ?? null}
             playerInitial={playerCypher.name.charAt(0).toUpperCase()}
             opponentInitial={opponentCypher.name.charAt(0).toUpperCase()}
+            turnPhase={turnPhase}
+            movementPath={movementPath}
+            moveDestination={moveDestination}
+            onPathUpdate={handlePathUpdate}
+            onMoveConfirmed={handleMoveConfirmed}
+            playerMovementSpeed={playerMovementSpeed}
+            playerWebViewRef={playerWebViewRef as any}
+            opponentWebViewRef={opponentWebViewRef as any}
           />
         </View>
 
@@ -914,15 +1066,25 @@ export default function BattleScreen() {
                 <Text style={styles.resolvingText}>Resolving...</Text>
               </View>
             )}
-            {turnPhase === 'player_select' && turnHistory.length === 0 && !selectedMove && (
-              <Text style={styles.narrationHint}>Choose your opening move.</Text>
+            {turnPhase === 'move' && turnHistory.length === 0 && (
+              <Text style={styles.narrationHint}>Drag from your position to trace a path. Tap Hold Position to stay.</Text>
+            )}
+            {turnPhase === 'action' && !selectedMove && (
+              <Text style={styles.narrationHint}>Choose an action from your move options.</Text>
             )}
           </View>
         </View>
 
+        {/* ── Hold Position Button (Move phase) ── */}
+        {turnPhase === 'move' && (
+          <TouchableOpacity style={styles.skipMoveButton} onPress={handleSkipMove}>
+            <Text style={styles.skipMoveText}>Hold Position</Text>
+          </TouchableOpacity>
+        )}
+
         {/* ── Move Cards ── */}
         <View style={styles.movesSection}>
-          {turnPhase === 'player_select' ? (
+          {turnPhase === 'action' ? (
             <View style={styles.movesGrid}>
               {playerOptions.map((opt) => (
                 <TouchableOpacity
@@ -947,19 +1109,15 @@ export default function BattleScreen() {
                 </TouchableOpacity>
               ))}
             </View>
-          ) : turnPhase === 'opponent_thinking' ? (
-            <View style={styles.lockInRow}>
-              <Text style={styles.lockInText}>Move locked — awaiting opponent...</Text>
-            </View>
-          ) : (
+          ) : (turnPhase === 'resolving' || turnPhase === 'narrating') ? (
             <View style={styles.lockInRow}>
               <ActivityIndicator size="small" color="#4b5563" />
             </View>
-          )}
+          ) : null}
         </View>
 
         {/* ── Execute Button ── */}
-        {turnPhase === 'player_select' && (
+        {turnPhase === 'action' && (
           <TouchableOpacity
             style={[styles.executeBtn, !canExecute && styles.executeBtnDisabled]}
             onPress={handleExecute}
@@ -1063,8 +1221,11 @@ const styles = StyleSheet.create({
   advDot: { position: 'absolute', width: 8, height: 8, borderRadius: 4, backgroundColor: '#ffffff', top: '50%', marginTop: -4, marginLeft: -2.5, zIndex: 2 },
 
   // Grid section
-  gridSection: { alignItems: 'center', paddingVertical: 6 },
-  gridHint: { fontSize: 9, fontWeight: '600', color: '#374151', letterSpacing: 1.8, marginBottom: 5 },
+  gridSection: { alignItems: 'center', paddingVertical: 4, gap: 4 },
+
+  // Hold Position button
+  skipMoveButton: { marginHorizontal: 12, marginTop: 4, paddingVertical: 8, alignItems: 'center', borderRadius: 8, borderWidth: 1, borderColor: '#007777', backgroundColor: '#00111100' },
+  skipMoveText: { fontSize: 12, fontWeight: '600', color: '#00aaaa', letterSpacing: 1 },
 
   // Narration
   narrationArea: { marginHorizontal: 12, marginTop: 6, backgroundColor: '#040c18', borderRadius: 10, borderWidth: 1, borderColor: '#0f1f35', padding: 12 },

@@ -73,6 +73,17 @@ STRUCTURE (follow this order every turn):
 2. Second line: The key exchange moment — the hit, miss, or block. Tag as "attack" or "defense".
 3. Third line: Tagged "both". Conclusive round-result beat. Player won: they pressed advantage. Opponent won: they landed better. Draw: brutal even exchange. Tag as "neutral".
 
+MOVEMENT PATH NARRATION:
+- You receive player_move_path and opponent_move_path arrays of grid cells
+- Describe the movement style, not just start/end position
+- Straight charge (path goes directly toward opponent): 'drives straight across four cells'
+- Flanking arc (path curves to side): 'cuts wide circling toward the exposed flank'
+- Evasive (path doubles back): 'darts back breaking the pursuit angle'
+- Hold position (path length 1 or null): 'plants feet and holds ground'
+- Movement narration line should be tagged action: 'movement'
+- Attack narration line tagged action: 'attack'
+- If attack_missed_reason === 'evaded': write the miss as the player actively dodging. 'Already gone — the blast scorches empty grid where they stood.'
+
 PHASE TONE:
 - Early (turns 1-2): Atmospheric, fighters establishing presence and style
 - Mid (turns 3-4): Intensity rising, patterns emerging, cracks showing
@@ -173,7 +184,9 @@ Before: Player at (${pPos.x},${pPos.y}) vs Opponent at (${oPos.x},${oPos.y}) —
 After: Player at (${pNewPos.x},${pNewPos.y}) vs Opponent at (${oNewPos.x},${oNewPos.y}) — distance ${distAfter} (${rangeDesc})
 Movement: ${positionChange}
 Positional advantage: ${positionalAdv}
-${attackMissed ? 'IMPORTANT: The attack MISSED. Narrate the miss — opponent read it, slipped it, or the angle was wrong.' : ''}
+Player path this turn: ${tr.player_move_path && tr.player_move_path.length > 1 ? `${tr.player_move_path.length - 1} steps (${tr.player_move_path.length <= 2 ? 'direct' : 'arc'})` : 'held position'}
+Opponent path this turn: ${tr.opponent_move_path && tr.opponent_move_path.length > 1 ? `${tr.opponent_move_path.length - 1} steps` : 'held position'}
+${attackMissed ? `IMPORTANT: The attack MISSED. Reason: ${tr.attack_missed_reason === 'evaded' ? 'EVASION — player moved away, opponent targeted old position. Write as active dodge.' : 'Out of range or angle was wrong.'}` : ''}
 
 TACTICAL CONTEXT:
 ${last_turn_context ?? 'Opening exchange.'}

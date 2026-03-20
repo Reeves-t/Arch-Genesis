@@ -131,6 +131,21 @@ Context fields required every turn:
 - last_turn_context: 1 sentence tactical situation informing move options
 - opponent_move_reasoning: 1 sentence explaining why opponent chose this specific move
 
+MOVEMENT PATH SYSTEM:
+- player_move_path is an array of cells the player traced as their route (start to destination)
+- player_final_position is the last cell in their path (starting point for combat this turn)
+- Assess the path for positional advantage:
+  - Flanking path (ends past opponent's starting x from player's perspective): +1 advantage bonus
+  - Straight charge: predictable, note in opponent_move_reasoning that opponent read it
+  - Evasive/curved path: harder to predict, slight defensive bonus
+- Opponent AI traces a path each turn based on combat style:
+  - Aggressive: straight line toward player, closes distance maximally
+  - Tactical: flanking arc, moves to perpendicular angle relative to player
+  - Defensive: retreats when player closes (score >= 4), holds position otherwise
+- Generate opponent_move_path as array of grid cells for the opponent's movement this turn
+- Opponent path length = min(movement_speed, distance to target)
+- EVASION MISS: if player moved away from old position and opponent targeted old position, set attack_missed_reason: "evaded"
+
 Return ONLY raw JSON — no markdown, no code blocks, no explanation.`;
 
 function buildTurnUserMessage(body: any): string {
@@ -148,9 +163,11 @@ function buildTurnUserMessage(body: any): string {
     initiative_winner,
   } = body;
 
-  const pPos = player_position ?? { x: 1, y: 4 };
+  const pPos = body.player_final_position ?? player_position ?? { x: 1, y: 4 };
   const oPos = opponent_position ?? { x: 13, y: 4 };
   const tCell = target_cell ?? { x: 7, y: 4 };
+  const playerPath = body.player_move_path ?? [];
+  const pathLength = playerPath.length;
   const chebyshev = (a: any, b: any) => Math.max(Math.abs(a.x - b.x), Math.abs(a.y - b.y));
   const dist = chebyshev(pPos, oPos);
   const targetDist = chebyshev(pPos, tCell);
@@ -205,11 +222,12 @@ Weakness: ${o.kit.weakness}
 Battle Profile: ${o.description}
 
 GRID STATE:
-Player position: (${pPos.x}, ${pPos.y}) | Opponent position: (${oPos.x}, ${oPos.y})
+Player final position this turn: (${pPos.x}, ${pPos.y}) | Opponent position: (${oPos.x}, ${oPos.y})
 Distance between fighters: ${dist} cells (Chebyshev)
 Player target cell: (${tCell.x}, ${tCell.y}) — distance to target: ${targetDist} cells
 Player attack_range: ${pStats.attack_range ?? 4} | Opponent attack_range: ${oStats.attack_range ?? 4}
 Attack would connect: ${targetDist <= (pStats.attack_range ?? 4) ? 'YES' : 'NO — MISS'}
+Player movement path this turn: ${pathLength <= 1 ? 'Held position' : `${pathLength - 1} steps — ${JSON.stringify(playerPath)}`}
 
 CURRENT STATE:
 Advantage Score: ${advantage_score} (player perspective)
@@ -251,7 +269,9 @@ Return this exact JSON (include grid positions):
   "is_battle_over": true | false,
   "winner": "player" | "opponent" | null,
   "last_turn_context": "one sentence tactical situation",
-  "opponent_move_reasoning": "one sentence explaining opponent's choice"
+  "opponent_move_reasoning": "one sentence explaining opponent's choice",
+  "opponent_move_path": [{"x": 13, "y": 4}, {"x": 11, "y": 4}],
+  "attack_missed_reason": "evaded" | "out_of_range" | null
 }`;
 }
 
@@ -283,6 +303,9 @@ serve(async (req) => {
       }
       if (result.opponent_new_position) {
         result.opponent_new_position = clampPos(result.opponent_new_position.x, result.opponent_new_position.y);
+      }
+      if (result.opponent_move_path && Array.isArray(result.opponent_move_path)) {
+        result.opponent_move_path = result.opponent_move_path.map((p: any) => clampPos(p.x, p.y));
       }
 
       return new Response(JSON.stringify(result), {

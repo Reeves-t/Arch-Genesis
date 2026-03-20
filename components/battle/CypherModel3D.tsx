@@ -1,5 +1,5 @@
 import React from 'react';
-import { View, StyleSheet } from 'react-native';
+import { View } from 'react-native';
 import { WebView } from 'react-native-webview';
 
 interface CypherModel3DProps {
@@ -11,7 +11,6 @@ interface CypherModel3DProps {
 
 function buildHtml(modelUrl: string, side: 'player' | 'opponent'): string {
   const safeUrl = JSON.stringify(modelUrl);
-  // Opponent faces left via rotation.y = Math.PI
   const initialRotationY = side === 'opponent' ? Math.PI : 0;
 
   return `<!DOCTYPE html>
@@ -113,20 +112,62 @@ function buildHtml(modelUrl: string, side: 'player' | 'opponent'): string {
       camera.updateProjectionMatrix();
       renderer.setSize(window.innerWidth, window.innerHeight);
     });
+
+    // React Native → WebView message bridge (rotation, attack, hit animations)
+    window.addEventListener('message', function(event) {
+      try {
+        var data = JSON.parse(event.data);
+
+        if (data.type === 'UPDATE_ROTATION' && modelRef) {
+          var targetRot = data.rotation;
+          var startRot = modelRef.rotation.y;
+          var duration = 150;
+          var startTime = Date.now();
+          var rotateInterval = setInterval(function() {
+            var elapsed = Date.now() - startTime;
+            var progress = Math.min(elapsed / duration, 1);
+            var eased = progress < 0.5
+              ? 2 * progress * progress
+              : -1 + (4 - 2 * progress) * progress;
+            if (modelRef) modelRef.rotation.y = startRot + (targetRot - startRot) * eased;
+            if (progress >= 1) clearInterval(rotateInterval);
+          }, 16);
+        }
+
+        if (data.type === 'TRIGGER_ATTACK' && modelRef) {
+          var origZ = modelRef.position.z;
+          modelRef.position.z -= 0.3;
+          setTimeout(function() { if (modelRef) modelRef.position.z = origZ; }, 200);
+        }
+
+        if (data.type === 'TRIGGER_HIT' && modelRef) {
+          var shakeCount = 0;
+          var shakeInterval = setInterval(function() {
+            if (modelRef) modelRef.position.x = (Math.random() - 0.5) * 0.1;
+            shakeCount++;
+            if (shakeCount > 6) {
+              if (modelRef) modelRef.position.x = 0;
+              clearInterval(shakeInterval);
+            }
+          }, 30);
+        }
+      } catch(e) {}
+    });
   </script>
 </body>
 </html>`;
 }
 
-export default function CypherModel3D({
+const CypherModel3D = React.forwardRef<WebView, CypherModel3DProps>(function CypherModel3D({
   modelUrl,
   side,
   width = 72,
   height = 90,
-}: CypherModel3DProps) {
+}, ref) {
   return (
     <View style={{ width, height, overflow: 'hidden' }}>
       <WebView
+        ref={ref as any}
         source={{ html: buildHtml(modelUrl, side) }}
         style={{ width, height, backgroundColor: 'transparent' }}
         scrollEnabled={false}
@@ -138,4 +179,6 @@ export default function CypherModel3D({
       />
     </View>
   );
-}
+});
+
+export default CypherModel3D;
