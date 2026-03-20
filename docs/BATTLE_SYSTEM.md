@@ -38,25 +38,101 @@ This means diagonal movement counts as 1, same as orthogonal. A range of 2 cover
 
 ---
 
-## Move-Phase Selection (Client)
+## Turn Phase Flow
 
-### Phase 1 — Select Move
-- Player taps a move card from their 4 options
-- Cells are highlighted based on move type:
-  - **Basic attack** → orange cells within `attack_range` of player
-  - **Special 1 / Special 2** → orange cells within `special_range` of player
-  - **Defense / Passive** → blue cells within `movement_speed` of player (repositioning)
+Each turn runs through three client-side phases before server resolution:
 
-### Phase 2 — Select Target Cell
+```
+MOVE → ACTION → EXECUTE → [RESOLVING] → [NARRATING]
+```
+
+### Phase 1 — MOVE (Path Drawing)
+- Player drags from their Cypher to trace a movement path
+- Valid cells: within `movement_speed` steps (Chebyshev) of current position
+- Path is drawn cell-by-cell; backtracking over an existing cell trims the path
+- Releasing the drag confirms the path; the destination becomes `moveDestination`
+- **Hold Position**: skip movement, stay at current cell → jumps straight to ACTION
+
+### Phase 2 — ACTION (Move Selection + Target)
+- Attack/special range is calculated from `moveDestination` (not starting position)
+- Player taps a move card; highlighted cells update based on move type:
+  - **Basic attack** → orange cells within `attack_range` of `moveDestination`
+  - **Special 1 / Special 2** → orange cells within `special_range` of `moveDestination`
+  - **Defense / Passive** → no target needed (self-targeting)
 - Player taps any highlighted cell to lock in a target
 - Execute button becomes active (neon blue)
 
-### Phase 3 — Execute
+### Phase 3 — EXECUTE
 - Player taps Execute
-- Positions + target sent to Framework Master
-- AI resolves turn, returns new positions, attack_connected flag
-- Grid animates: attack line flash → position update
+- Client animates player model along traced path (cell-by-cell, with rotation)
+- Full path + final position + target sent to Framework Master
+- AI resolves turn, animates opponent path, returns outcome
 - Narration begins
+
+---
+
+## Path-Based Movement
+
+### Client Path Representation
+```typescript
+type GridPos = { x: number; y: number };
+movementPath: GridPos[];    // full traced path including start cell
+moveDestination: GridPos;  // last cell of path (or current pos if skipped)
+```
+
+### Path Visualization
+| Element | Style |
+|---------|-------|
+| Movement range | Cyan cells at 10% opacity |
+| Path cells | Cyan cells at 22% opacity |
+| Direction arrows | White arrow character on each path cell |
+| Destination dot | Pulsing cyan circle (1.35 ↔ 0.85 scale, 480ms) |
+
+### Path Constraints
+- Max steps = `movement_speed` (start cell is free, not counted)
+- Adjacency: each step must be Chebyshev distance 1 from previous
+- Backtrack: dragging over a prior path cell trims the path to that point
+
+### Path Animation (animateModelAlongPath)
+For each consecutive pair of cells in the path:
+1. Compute direction string (`up`, `down-right`, etc.) via `getDirectionBetween`
+2. Send `UPDATE_ROTATION` to model WebView (150ms eased rotation)
+3. Animate marker to next cell (`animateMarkerToPosition`, 220ms)
+
+### Model Rotation Mapping
+| Direction | Player rotation.y | Opponent rotation.y |
+|-----------|------------------|---------------------|
+| right | 0 | π |
+| left | π | 0 |
+| up | −π/2 | π + π/2 |
+| down | π/2 | π − π/2 |
+| up-right | −π/4 | π + π/4 |
+| up-left | −3π/4 | π + 3π/4 |
+| down-right | π/4 | π − π/4 |
+| down-left | 3π/4 | π − 3π/4 |
+
+---
+
+## WebView Message Bridge (3D Models)
+
+CypherModel3D exposes its WebView ref via `React.forwardRef`. Parents inject JS to trigger model animations:
+
+```typescript
+function sendMessageToModelWebView(ref: React.RefObject<WebView>, msg: object) {
+  ref.current?.injectJavaScript(
+    `window.dispatchEvent(new MessageEvent('message', { data: ${JSON.stringify(JSON.stringify(msg))} })); true;`
+  );
+}
+```
+
+### Message Types
+| Type | Payload | Effect |
+|------|---------|--------|
+| `UPDATE_ROTATION` | `{ rotation: number }` | Smoothly rotates model to target Y rotation (150ms ease) |
+| `TRIGGER_ATTACK` | — | Lurches model forward (−0.3 Z, 200ms snap back) |
+| `TRIGGER_HIT` | — | Shakes model position.x randomly (6 frames × 30ms) |
+
+---
 
 ---
 
@@ -66,10 +142,12 @@ This means diagonal movement counts as 1, same as orthogonal. A range of 2 cover
 ```json
 {
   "mode": "resolve_turn",
-  "player_cypher": { ... },
-  "opponent_cypher": { ... },
+  "player_cypher": { "..." },
+  "opponent_cypher": { "..." },
   "player_position": { "x": 1, "y": 4 },
   "opponent_position": { "x": 13, "y": 4 },
+  "player_final_position": { "x": 3, "y": 4 },
+  "player_move_path": [{ "x": 1, "y": 4 }, { "x": 2, "y": 4 }, { "x": 3, "y": 4 }],
   "target_cell": { "x": 5, "y": 4 },
   "advantage_score": 0,
   "current_turn": 1,
@@ -80,15 +158,26 @@ This means diagonal movement counts as 1, same as orthogonal. A range of 2 cover
 }
 ```
 
-### Outputs (additions to existing schema)
+`player_final_position` is the last cell of the traced path (or `player_position` if the player held position).
+
+### Outputs
 ```json
 {
   "player_new_position": { "x": 3, "y": 4 },
   "opponent_new_position": { "x": 11, "y": 4 },
+  "opponent_move_path": [
+    { "x": 13, "y": 4 },
+    { "x": 12, "y": 4 },
+    { "x": 11, "y": 4 }
+  ],
   "attack_connected": true,
+  "attack_missed_reason": null,
   "positional_advantage": "player"
 }
 ```
+
+`opponent_move_path`: array of cells the opponent traversed this turn (used for animation).
+`attack_missed_reason`: `"evaded"` | `"out_of_range"` | `null` — used by Narrator to characterize missed attacks.
 
 ---
 
