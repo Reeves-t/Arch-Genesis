@@ -8,8 +8,10 @@ import { useAuthStore } from '../store/useAuthStore';
 import { supabase } from '../lib/supabase';
 import {
   removeBackground,
-  generateDirectionalImages,
-  removeBackgroundSequential,
+  generateTripoModel,
+  // LEGACY PNG DIRECTIONAL — commented out, replaced by Tripo pipeline
+  // generateDirectionalImages,
+  // removeBackgroundSequential,
 } from '../lib/falClient';
 import { deriveBaseStats, applyBonusPoints, mapCustomStructureToStandard } from '../lib/statDerivation';
 import { SketchStep } from '../components/wizard/SketchStep';
@@ -125,9 +127,11 @@ export default function CreateScreen() {
 
     const cypherId = generateUUID();
     let imageUrl: string | undefined = undefined;
-    let imageFrontUrl: string | null = null;
-    let imageRightUrl: string | null = null;
-    let imageLeftUrl: string | null = null;
+    let modelUrl: string | null = null;
+    // LEGACY PNG DIRECTIONAL — kept for reference
+    // let imageFrontUrl: string | null = null;
+    // let imageRightUrl: string | null = null;
+    // let imageLeftUrl: string | null = null;
 
     // Retrieve prompt + seed stored in wizard state (set during variant selection)
     const generationPrompt: string | null = (genesisWizard as any).generationPrompt ?? null;
@@ -163,51 +167,39 @@ export default function CreateScreen() {
       console.log('[handleComplete] skipping image upload — missing user or selectedImageUrl');
     }
 
-    // ── Step 2: Directional generation (runs only if we have prompt/seed/image) ─
+    // ── Step 2: Generate 3D model via Tripo ──────────────────────────────────
+    if (user && imageUrl) {
+      setLoadingText('Generating 3D model...');
+      try {
+        console.log('[handleComplete] starting Tripo 3D generation...');
+        modelUrl = await generateTripoModel(imageUrl, cypherId, user.id);
+        console.log('[handleComplete] Tripo model URL:', modelUrl ?? 'null');
+      } catch (err) {
+        console.warn('[handleComplete] Tripo generation failed (non-blocking):', err);
+      }
+    }
+
+    // ============================================================
+    // LEGACY DIRECTIONAL PNG GENERATION — COMMENTED OUT
+    // Replaced by Tripo 3D pipeline
+    // ============================================================
+    /*
     if (user && imageUrl && generationPrompt && generationSeed != null) {
       setLoadingText('Creating battle stances...');
       try {
-        console.log('[handleComplete] generating directional images...');
-        const directionals = await generateDirectionalImages(
-          imageUrl,
-          generationPrompt,
-          generationSeed
-        );
-
+        const directionals = await generateDirectionalImages(imageUrl, generationPrompt, generationSeed);
         setLoadingText('Removing backgrounds...');
-        const cleaned = await removeBackgroundSequential([
-          directionals.frontUrl,
-          directionals.rightUrl,
-          directionals.leftUrl,
-        ]);
-
+        const cleaned = await removeBackgroundSequential([directionals.frontUrl, directionals.rightUrl, directionals.leftUrl]);
         setLoadingText('Uploading stances...');
         const [cleanFront, cleanRight, cleanLeft] = cleaned;
-
-        if (cleanFront) {
-          imageFrontUrl = await uploadImageToStorage(
-            user.id, cleanFront,
-            `${user.id}/${cypherId}/front.png`, 'image/png'
-          );
-        }
-        if (cleanRight) {
-          imageRightUrl = await uploadImageToStorage(
-            user.id, cleanRight,
-            `${user.id}/${cypherId}/right.png`, 'image/png'
-          );
-        }
-        if (cleanLeft) {
-          imageLeftUrl = await uploadImageToStorage(
-            user.id, cleanLeft,
-            `${user.id}/${cypherId}/left.png`, 'image/png'
-          );
-        }
-
-        console.log('[handleComplete] directionals — front:', imageFrontUrl ?? 'null', 'right:', imageRightUrl ?? 'null', 'left:', imageLeftUrl ?? 'null');
+        if (cleanFront) imageFrontUrl = await uploadImageToStorage(user.id, cleanFront, `${user.id}/${cypherId}/front.png`, 'image/png');
+        if (cleanRight) imageRightUrl = await uploadImageToStorage(user.id, cleanRight, `${user.id}/${cypherId}/right.png`, 'image/png');
+        if (cleanLeft)  imageLeftUrl  = await uploadImageToStorage(user.id, cleanLeft,  `${user.id}/${cypherId}/left.png`,  'image/png');
       } catch (err) {
         console.warn('[handleComplete] directional generation failed (non-blocking):', err);
       }
     }
+    */
 
     setLoadingText('Finalizing...');
 
@@ -234,9 +226,7 @@ export default function CreateScreen() {
       originLog: genesisWizard.originLog,
       description: genesisWizard.description || '',
       imageUrl,
-      imageFrontUrl: imageFrontUrl ?? undefined,
-      imageRightUrl: imageRightUrl ?? undefined,
-      imageLeftUrl: imageLeftUrl ?? undefined,
+      modelUrl: modelUrl ?? undefined,
       generationPrompt: generationPrompt ?? undefined,
       generationSeed: generationSeed ?? undefined,
       sizeClass: genesisWizard.sizeClass!,
@@ -265,12 +255,14 @@ export default function CreateScreen() {
           origin_log: newCypher.originLog || null,
           description: newCypher.description,
           image_url: newCypher.imageUrl || null,
-          image_front_url: imageFrontUrl,
-          image_right_url: imageRightUrl,
-          image_left_url: imageLeftUrl,
+          model_url: modelUrl,
+          model_generated_at: modelUrl ? new Date().toISOString() : null,
           generation_prompt: generationPrompt,
           generation_seed: generationSeed,
-          poses_generated_at: (imageFrontUrl || imageRightUrl || imageLeftUrl) ? new Date().toISOString() : null,
+          // LEGACY PNG DIRECTIONAL — columns kept in DB but no longer populated
+          // image_front_url: null,
+          // image_right_url: null,
+          // image_left_url: null,
           size_class: newCypher.sizeClass,
           mobility: newCypher.mobility,
           combat_style: newCypher.combatStyle,

@@ -148,13 +148,13 @@ export async function generateCypherImages(
   return { urls, basePrompt: baseContext, seed: seeds[0] };
 }
 
-// ─── Phase 2: Directional image generation (img2img) ─────────────────────────
-
-/**
- * Generates front, right, and left facing variants from the selected image.
- * Runs SEQUENTIALLY to avoid rate limiting and ensure consistency.
- * Each call uses fal-ai/flux/dev/image-to-image with low strength to preserve identity.
- */
+// ============================================================
+// LEGACY PNG DIRECTIONAL SYSTEM — COMMENTED OUT
+// Replaced by Tripo 3D generation pipeline
+// Keep for reference in case fallback is needed
+// See generateTripoModel() for new approach
+// ============================================================
+/*
 export async function generateDirectionalImages(
   selectedImageUrl: string,
   originalPrompt: string,
@@ -166,7 +166,6 @@ export async function generateDirectionalImages(
 }> {
   const basePrompt = originalPrompt;
 
-  // Front — img2img staying close to selected variant
   console.log('DIRECTIONAL: Generating front facing');
   let frontUrl: string | null = null;
   try {
@@ -184,12 +183,11 @@ export async function generateDirectionalImages(
     console.log('DIRECTIONAL: Front result:', frontUrl ? 'ok' : 'null');
   } catch (err) {
     console.warn('DIRECTIONAL: Front generation failed:', err);
-    frontUrl = selectedImageUrl; // fallback to original
+    frontUrl = selectedImageUrl;
   }
 
   await new Promise((resolve) => setTimeout(resolve, 1000));
 
-  // Right — text-to-image with explicit right facing direction
   console.log('DIRECTIONAL: Generating right facing via text-to-image');
   let rightUrl: string | null = null;
   try {
@@ -211,7 +209,6 @@ export async function generateDirectionalImages(
 
   await new Promise((resolve) => setTimeout(resolve, 1000));
 
-  // Left — text-to-image with explicit left facing direction
   console.log('DIRECTIONAL: Generating left facing via text-to-image');
   let leftUrl: string | null = null;
   try {
@@ -233,13 +230,13 @@ export async function generateDirectionalImages(
 
   return { frontUrl, rightUrl, leftUrl };
 }
+*/
 
-// ─── Phase 3: Sequential background removal ───────────────────────────────────
-
-/**
- * Runs background removal on an array of image URLs sequentially.
- * Falls back to original URL on failure. Skips nulls.
- */
+// ============================================================
+// LEGACY BACKGROUND REMOVAL — COMMENTED OUT
+// No longer needed with Tripo 3D pipeline
+// ============================================================
+/*
 export async function removeBackgroundSequential(
   imageUrls: (string | null)[]
 ): Promise<(string | null)[]> {
@@ -265,6 +262,186 @@ export async function removeBackgroundSequential(
   }
 
   return results;
+}
+*/
+
+// ============================================================
+// TRIPO 3D GENERATION PIPELINE
+// Converts cypher PNG to GLB via FAL Tripo API
+// Cost: $0.20-0.40 per model, commercial use included
+// ============================================================
+
+export async function generateTripoModel(
+  imageUrl: string,
+  cypherId: string,
+  userId: string
+): Promise<string | null> {
+  console.log('TRIPO: Starting 3D model generation');
+  console.log('TRIPO: Input image URL:', imageUrl);
+
+  try {
+    const result = await fal.subscribe('tripo3d/tripo/v2.5/image-to-3d', {
+      input: {
+        image_url: imageUrl,
+        texture: 'standard',
+        texture_alignment: 'original_image',
+        orientation: 'default',
+      },
+      logs: true,
+      onQueueUpdate: (update: any) => {
+        if (update.status === 'IN_PROGRESS') {
+          update.logs?.map((log: any) => log.message).forEach((msg: string) =>
+            console.log('TRIPO LOG:', msg)
+          );
+        }
+      },
+    }) as any;
+
+    console.log('TRIPO: Generation complete');
+    console.log('TRIPO: Result keys:', Object.keys(result?.data ?? {}));
+
+    const glbUrl = result?.data?.model_mesh?.url ?? null;
+    console.log('TRIPO: GLB URL:', glbUrl);
+
+    if (!glbUrl) {
+      console.error('TRIPO: No GLB URL in response', JSON.stringify(result?.data));
+      return null;
+    }
+
+    // Upload GLB to Supabase Storage
+    // NOTE: Using arrayBuffer + Uint8Array — React Native Blob is not compatible with Supabase JS client
+    const storagePath = `${userId}/${cypherId}/model.glb`;
+    console.log('TRIPO: Uploading GLB to Supabase Storage:', storagePath);
+
+    const glbResponse = await fetch(glbUrl);
+    const glbBuffer = await glbResponse.arrayBuffer();
+    const glbBytes = new Uint8Array(glbBuffer);
+    console.log('TRIPO: GLB buffer byteLength:', glbBuffer.byteLength);
+
+    if (glbBuffer.byteLength === 0) {
+      console.error('TRIPO: GLB buffer is empty');
+      return null;
+    }
+
+    const { data: uploadData, error: uploadError } = await supabase.storage
+      .from('cypher-models')
+      .upload(storagePath, glbBytes, {
+        contentType: 'model/gltf-binary',
+        upsert: true,
+      });
+
+    console.log('TRIPO: Upload result:', uploadData, uploadError);
+    if (uploadError) throw new Error(`GLB upload failed: ${uploadError.message}`);
+
+    const { data: publicData } = supabase.storage
+      .from('cypher-models')
+      .getPublicUrl(storagePath);
+
+    console.log('TRIPO: Public GLB URL:', publicData.publicUrl);
+    return publicData.publicUrl;
+
+  } catch (err) {
+    console.error('TRIPO: Generation failed:', err);
+    return null;
+  }
+}
+
+// ─── Pose GLB generation (attack / defend) ────────────────────────────────────
+
+export async function generatePoseGLB(
+  baseImageUrl: string,
+  originalPrompt: string,
+  originalSeed: number,
+  poseType: 'attack' | 'defend',
+  poseDescription: string,
+  cypherId: string,
+  userId: string,
+  setNumber: number
+): Promise<string | null> {
+  console.log(`POSE GLB: Starting ${poseType} pose generation`);
+
+  try {
+    // Step 1 — Generate posed PNG via flux img2img
+    const posePrompt = poseType === 'attack'
+      ? `${originalPrompt}, aggressive attack pose, ${poseDescription}, weapon raised and ready to strike, dynamic action stance, lunging forward, full body visible, pure black background, no background`
+      : `${originalPrompt}, defensive stance, ${poseDescription}, shield or guard raised, braced and ready, protective pose, full body visible, pure black background, no background`;
+
+    const negativePrompt = 'background, environment, scenery, multiple characters, different character, text, watermark';
+
+    console.log(`POSE GLB: Generating ${poseType} PNG via flux img2img`);
+    const pngResult = await fal.subscribe('fal-ai/flux/dev/image-to-image', {
+      input: {
+        prompt: posePrompt,
+        image_url: baseImageUrl,
+        strength: 0.45,
+        num_inference_steps: 28,
+        negative_prompt: negativePrompt,
+        seed: poseType === 'attack' ? originalSeed + 10 : originalSeed + 20,
+        image_size: { width: 768, height: 1024 },
+      },
+    }) as any;
+
+    const posePngUrl = pngResult?.data?.images?.[0]?.url ?? null;
+    console.log(`POSE GLB: ${poseType} PNG URL:`, posePngUrl);
+
+    if (!posePngUrl) throw new Error('Pose PNG generation returned null');
+
+    // Step 2 — Convert posed PNG to GLB via Tripo
+    console.log(`POSE GLB: Converting ${poseType} PNG to GLB via Tripo`);
+    const tripoResult = await fal.subscribe('tripo3d/tripo/v2.5/image-to-3d', {
+      input: {
+        image_url: posePngUrl,
+        texture: 'standard',
+        texture_alignment: 'original_image',
+        orientation: 'default',
+      },
+      logs: true,
+      onQueueUpdate: (update: any) => {
+        if (update.status === 'IN_PROGRESS') {
+          update.logs?.map((log: any) => log.message).forEach((msg: string) =>
+            console.log(`POSE GLB TRIPO LOG:`, msg)
+          );
+        }
+      },
+    }) as any;
+
+    const glbUrl = tripoResult?.data?.model_mesh?.url ?? null;
+    console.log(`POSE GLB: ${poseType} GLB URL:`, glbUrl);
+
+    if (!glbUrl) throw new Error('Tripo returned no GLB for pose');
+
+    // Step 3 — Upload GLB to Supabase Storage
+    // NOTE: Using arrayBuffer + Uint8Array — React Native Blob is not compatible with Supabase JS client
+    const timestamp = Date.now();
+    const storagePath = `${userId}/${cypherId}/${poseType}_set${setNumber}_${timestamp}.glb`;
+
+    const glbResponse = await fetch(glbUrl);
+    const glbBuffer = await glbResponse.arrayBuffer();
+    const glbBytes = new Uint8Array(glbBuffer);
+    console.log(`POSE GLB: Buffer byteLength:`, glbBuffer.byteLength);
+
+    if (glbBuffer.byteLength === 0) throw new Error('Pose GLB buffer is empty');
+
+    const { error: uploadError } = await supabase.storage
+      .from('cypher-models')
+      .upload(storagePath, glbBytes, {
+        contentType: 'model/gltf-binary',
+        upsert: true,
+      });
+
+    if (uploadError) throw new Error(`Pose GLB upload failed: ${uploadError.message}`);
+
+    const { data: publicData } = supabase.storage
+      .from('cypher-models')
+      .getPublicUrl(storagePath);
+
+    console.log(`POSE GLB: Final URL:`, publicData.publicUrl);
+    return publicData.publicUrl;
+
+  } catch (err) {
+    console.error(`POSE GLB: Failed for ${poseType}:`, err);
+    return null;
+  }
 }
 
 // ─── Pose generation (attack / defend) ───────────────────────────────────────

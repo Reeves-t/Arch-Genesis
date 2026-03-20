@@ -201,6 +201,52 @@ The left and right default battle poses are generated ONLY at the end of cypher 
 
 (Planned: special, victory, defeat, finisher)
 
+## 3D Model Pipeline (Current)
+
+### Default Model Generation
+After cypher creation image is finalized:
+1. PNG sent to Tripo via FAL endpoint: `tripo3d/tripo/v2.5/image-to-3d`
+2. GLB returned and uploaded to `cypher-models` Supabase Storage bucket
+3. Public URL saved as `model_url` in cyphers table
+4. Cost: $0.20-0.40 per model via FAL key
+
+### Pose Model Generation
+For attack and defend poses:
+1. flux/dev/image-to-image generates posed PNG from base image (strength 0.45)
+2. Posed PNG sent to Tripo for 3D conversion
+3. GLB uploaded to `cypher-models/{userId}/{cypherId}/{poseType}_set{N}_{ts}.glb`
+4. URL saved to `cypher_pose_sets.model_url`
+5. `generation_method = 'tripo'`
+
+### Storage Buckets
+- `cypher-images` — PNG files (image_url, original generated images)
+- `cypher-models` — GLB files (model_url, pose GLBs)
+
+### Facing Direction
+No separate left/right models needed.
+Rotate GLB on Y axis in Three.js / expo-three scene:
+- Player side: `rotation.y = 0` (facing right)
+- Opponent side: `rotation.y = Math.PI` (facing left)
+
+### Legacy PNG Directional System
+Commented out in lib/falClient.ts
+Functions: `generateDirectionalImages`, `removeBackgroundSequential`
+Reason: Replaced by Tripo single-model approach
+Safe to delete after 3D pipeline is confirmed stable
+
+### 2D PNG Kept For
+- Roster list thumbnail (fast loading)
+- Cypher sheet header image
+- Battle portrait above grid (until 3D viewer built)
+- Any UI where GLB is too heavy to load
+
+### GLB Used For
+- Battle grid character model
+- 3D viewer on cypher sheet
+- Pose animations in battle
+- Cypher card 3D preview
+
 ## Version History
 v1.0 — Initial stat system. Removed Material and Visual Style from structure. Added 6 core stats with bonus point allocation. Grid system 13x7.
 v1.1 — Pose system. Directional battle poses (front/right/left) generated at cypher creation. Attack and defend poses generated on demand from Pose Hub. Grid renders PNG character images with facing. Battle screen tracks pose state per turn.
+v1.2 — 3D pipeline. Replaced directional PNG generation with Tripo GLB. Single model per cypher, Y-axis rotation handles facing. Pose GLBs generated via img2img + Tripo. Storage split: cypher-images (PNG) and cypher-models (GLB).

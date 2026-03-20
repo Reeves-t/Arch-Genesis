@@ -154,6 +154,8 @@ export const useGameStore = create<GameStore>((set, get) => ({
         originLog: row.origin_log ?? undefined,
         description: row.description ?? '',
         imageUrl: row.image_url ?? undefined,
+        modelUrl: row.model_url ?? null,
+        modelGeneratedAt: row.model_generated_at ?? null,
         imageFrontUrl: row.image_front_url ?? null,
         imageRightUrl: row.image_right_url ?? null,
         imageLeftUrl: row.image_left_url ?? null,

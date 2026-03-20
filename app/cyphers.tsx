@@ -16,7 +16,7 @@ import { BackHeader } from '../components/BackHeader';
 import { useGameStore } from '../store/useGameStore';
 import { useAuthStore } from '../store/useAuthStore';
 import { supabase } from '../lib/supabase';
-import { generatePoseImage } from '../lib/falClient';
+import { generatePoseGLB } from '../lib/falClient';
 import { useEffect } from 'react';
 import { Cypher, CypherStats } from '../types';
 import { STAT_CAPS } from '../lib/statDerivation';
@@ -278,6 +278,9 @@ interface PoseSet {
   cypher_id: string;
   pose_type: string;
   set_number: number;
+  model_url: string | null;
+  generation_method: string | null;
+  // LEGACY PNG fields — kept for reference, no longer populated by new pipeline
   image_right_url: string | null;
   image_left_url: string | null;
   is_active: boolean;
@@ -369,49 +372,11 @@ const PoseHub: React.FC<PoseHubProps> = ({ cypher, onPoseUpdate }) => {
     setPoseGenerationStep(`Preparing ${poseType} pose...`);
 
     try {
-      // Step 1 — Right pose (generatePoseImage already includes bg removal)
-      console.log(`POSE GEN: ${poseType} right — base: ${baseImageUrl.slice(0, 60)}`);
-      console.log(`POSE GEN: prompt: ${generationPrompt.slice(0, 80)}`);
-      console.log(`POSE GEN: desc: ${poseDescription}, seed: ${generationSeed}`);
-      setPoseGenerationStep(`Generating ${poseType} right angle...`);
-
-      const rightUrl = await generatePoseImage(
-        baseImageUrl, generationPrompt, generationSeed, poseType, poseDescription, 'right'
-      );
-      console.log(`POSE GEN: right result: ${rightUrl?.slice(0, 60) ?? 'null'}`);
-      if (!rightUrl) throw new Error('Right facing generation returned null');
-
-      await new Promise(r => setTimeout(r, 1000));
-
-      // Step 2 — Left pose
-      console.log(`POSE GEN: ${poseType} left — starting`);
-      setPoseGenerationStep(`Generating ${poseType} left angle...`);
-
-      const leftUrl = await generatePoseImage(
-        baseImageUrl, generationPrompt, generationSeed, poseType, poseDescription, 'left'
-      );
-      console.log(`POSE GEN: left result: ${leftUrl?.slice(0, 60) ?? 'null'}`);
-      if (!leftUrl) throw new Error('Left facing generation returned null');
-
-      // Step 3 — Upload to Supabase Storage immediately (FAL URLs expire quickly)
-      setPoseGenerationStep('Uploading images...');
+      // ── Get auth user ──────────────────────────────────────────────────────
       const { data: { user: authUser } } = await supabase.auth.getUser();
       if (!authUser) throw new Error('No authenticated user');
 
-      const ts = Date.now();
-      const sanitizedCypherId = cypher.id.replace(/[^a-zA-Z0-9-]/g, '');
-      const sanitizedUserId = authUser.id.replace(/[^a-zA-Z0-9-]/g, '');
-      const rightPath = `${sanitizedUserId}/${sanitizedCypherId}/${poseType}_right_${ts}.png`;
-      const leftPath = `${sanitizedUserId}/${sanitizedCypherId}/${poseType}_left_${ts}.png`;
-
-      const rightFinalUrl = await fetchAndUpload(rightUrl, rightPath, 'image/png');
-      if (!rightFinalUrl) throw new Error('Right upload returned null public URL');
-
-      const leftFinalUrl = await fetchAndUpload(leftUrl, leftPath, 'image/png');
-      if (!leftFinalUrl) throw new Error('Left upload returned null public URL');
-
-      // Step 4 — Insert into cypher_pose_sets
-      setPoseGenerationStep('Saving pose set...');
+      // ── Get next set number ────────────────────────────────────────────────
       const { data: existing } = await supabase
         .from('cypher_pose_sets')
         .select('set_number')
@@ -423,7 +388,29 @@ const PoseHub: React.FC<PoseHubProps> = ({ cypher, onPoseUpdate }) => {
       const nextSetNumber = existing && existing.length > 0 ? existing[0].set_number + 1 : 1;
       const isFirst = nextSetNumber === 1;
 
-      // First set auto-activates — deactivate any existing (safety)
+      // ── Generate pose GLB via Tripo ────────────────────────────────────────
+      setPoseGenerationStep(`Generating ${poseType} pose...`);
+      console.log(`POSE GEN: ${poseType} — base: ${baseImageUrl.slice(0, 60)}`);
+      console.log(`POSE GEN: prompt: ${generationPrompt.slice(0, 80)}`);
+      console.log(`POSE GEN: desc: ${poseDescription}, seed: ${generationSeed}, set: ${nextSetNumber}`);
+
+      const poseModelUrl = await generatePoseGLB(
+        baseImageUrl,
+        generationPrompt,
+        generationSeed,
+        poseType,
+        poseDescription,
+        cypher.id,
+        authUser.id,
+        nextSetNumber
+      );
+
+      console.log(`POSE GEN: GLB URL: ${poseModelUrl?.slice(0, 60) ?? 'null'}`);
+      if (!poseModelUrl) throw new Error('Pose GLB generation returned null');
+
+      // ── Insert into cypher_pose_sets ───────────────────────────────────────
+      setPoseGenerationStep('Saving pose set...');
+
       if (isFirst) {
         await supabase
           .from('cypher_pose_sets')
@@ -439,8 +426,8 @@ const PoseHub: React.FC<PoseHubProps> = ({ cypher, onPoseUpdate }) => {
           user_id: authUser.id,
           pose_type: poseType,
           set_number: nextSetNumber,
-          image_right_url: rightFinalUrl,
-          image_left_url: leftFinalUrl,
+          model_url: poseModelUrl,
+          generation_method: 'tripo',
           is_active: isFirst,
           fp_cost: 0,
         })
@@ -450,11 +437,11 @@ const PoseHub: React.FC<PoseHubProps> = ({ cypher, onPoseUpdate }) => {
       console.log('POSE GEN: insert result:', inserted?.id ?? 'null', insertErr?.message ?? 'ok');
       if (insertErr) throw new Error(`DB insert failed: ${insertErr.message}`);
 
-      // Step 5 — If active set, also sync to cyphers table columns for battle fallback
+      // ── Sync model_url to cyphers table for battle fallback (first/active set) ─
       if (isFirst) {
         const colUpdates = poseType === 'attack'
-          ? { attack_right_url: rightFinalUrl, attack_left_url: leftFinalUrl }
-          : { defend_right_url: rightFinalUrl, defend_left_url: leftFinalUrl };
+          ? { attack_model_url: poseModelUrl }
+          : { defend_model_url: poseModelUrl };
 
         const { error: colErr } = await supabase
           .from('cyphers')
@@ -462,15 +449,29 @@ const PoseHub: React.FC<PoseHubProps> = ({ cypher, onPoseUpdate }) => {
           .eq('id', cypher.id);
 
         console.log('POSE GEN: cyphers column update:', colErr?.message ?? 'ok');
-
-        // Update local store
-        const storeUpdate = poseType === 'attack'
-          ? { attackRightUrl: rightFinalUrl, attackLeftUrl: leftFinalUrl }
-          : { defendRightUrl: rightFinalUrl, defendLeftUrl: leftFinalUrl };
-        onPoseUpdate(storeUpdate);
+        onPoseUpdate(poseType === 'attack' ? { attackRightUrl: poseModelUrl } : { defendRightUrl: poseModelUrl });
       }
 
-      // Step 6 — Reload pose sets (small delay to let DB settle)
+      // ============================================================
+      // LEGACY PNG POSE GENERATION — COMMENTED OUT
+      // Replaced by Tripo GLB pose pipeline above
+      // ============================================================
+      /*
+      const rightUrl = await generatePoseImage(baseImageUrl, generationPrompt, generationSeed, poseType, poseDescription, 'right');
+      if (!rightUrl) throw new Error('Right facing generation returned null');
+      await new Promise(r => setTimeout(r, 1000));
+      const leftUrl = await generatePoseImage(baseImageUrl, generationPrompt, generationSeed, poseType, poseDescription, 'left');
+      if (!leftUrl) throw new Error('Left facing generation returned null');
+      const ts = Date.now();
+      const sanitizedCypherId = cypher.id.replace(/[^a-zA-Z0-9-]/g, '');
+      const sanitizedUserId = authUser.id.replace(/[^a-zA-Z0-9-]/g, '');
+      const rightPath = `${sanitizedUserId}/${sanitizedCypherId}/${poseType}_right_${ts}.png`;
+      const leftPath  = `${sanitizedUserId}/${sanitizedCypherId}/${poseType}_left_${ts}.png`;
+      const rightFinalUrl = await fetchAndUpload(rightUrl, rightPath, 'image/png');
+      const leftFinalUrl  = await fetchAndUpload(leftUrl,  leftPath,  'image/png');
+      */
+
+      // ── Reload pose sets ───────────────────────────────────────────────────
       setPoseGenerationStep('Loading poses...');
       await new Promise(r => setTimeout(r, 500));
       await loadPoseSets(cypher.id);
@@ -504,16 +505,16 @@ const PoseHub: React.FC<PoseHubProps> = ({ cypher, onPoseUpdate }) => {
       .eq('id', setId);
 
     const activeSet = poseSets[poseType]?.find(s => s.id === setId);
-    if (activeSet) {
+    if (activeSet?.model_url) {
       const colUpdates = poseType === 'attack'
-        ? { attack_right_url: activeSet.image_right_url, attack_left_url: activeSet.image_left_url }
-        : { defend_right_url: activeSet.image_right_url, defend_left_url: activeSet.image_left_url };
+        ? { attack_model_url: activeSet.model_url }
+        : { defend_model_url: activeSet.model_url };
 
       await supabase.from('cyphers').update(colUpdates).eq('id', cypher.id);
 
       const storeUpdate = poseType === 'attack'
-        ? { attackRightUrl: activeSet.image_right_url, attackLeftUrl: activeSet.image_left_url }
-        : { defendRightUrl: activeSet.image_right_url, defendLeftUrl: activeSet.image_left_url };
+        ? { attackRightUrl: activeSet.model_url }
+        : { defendRightUrl: activeSet.model_url };
       onPoseUpdate(storeUpdate as any);
     }
 
@@ -602,23 +603,40 @@ const PoseSectionWithSets: React.FC<PoseSectionProps> = ({
     {sets.map((set) => (
       <View
         key={set.id}
-        style={[poseStyles.setCard, set.is_active && { borderColor: '#3b82f6' }]}
+        style={[poseStyles.setCard, set.is_active && { borderColor: accentColor }]}
       >
         <View style={poseStyles.setCardHeader}>
           <Text style={poseStyles.setCardLabel}>Set {set.set_number}</Text>
-          {set.is_active && (
-            <View style={poseStyles.activeBadge}>
-              <Text style={poseStyles.activeBadgeText}>ACTIVE</Text>
-            </View>
-          )}
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+            {set.generation_method === 'tripo' && (
+              <View style={poseStyles.tripobadge}>
+                <Text style={poseStyles.tripoBadgeText}>3D</Text>
+              </View>
+            )}
+            {set.is_active && (
+              <View style={poseStyles.activeBadge}>
+                <Text style={poseStyles.activeBadgeText}>ACTIVE</Text>
+              </View>
+            )}
+          </View>
         </View>
-        <View style={poseStyles.poseRow}>
-          <PoseCard label="Right" imageUrl={set.image_right_url} />
-          <PoseCard label="Left" imageUrl={set.image_left_url} />
-        </View>
+        {set.model_url ? (
+          <View style={poseStyles.glbPreview}>
+            <Text style={poseStyles.glbIcon}>⬡</Text>
+            <Text style={poseStyles.glbReadyText}>3D Model Ready</Text>
+            <Text style={poseStyles.glbFileName} numberOfLines={1}>
+              {set.model_url.split('/').pop()?.split('?')[0]}
+            </Text>
+          </View>
+        ) : (
+          <View style={poseStyles.glbPreview}>
+            <Text style={poseStyles.glbIcon}>⬡</Text>
+            <Text style={[poseStyles.glbReadyText, { color: '#4b5563' }]}>No model</Text>
+          </View>
+        )}
         {!set.is_active && (
-          <TouchableOpacity style={poseStyles.setActiveBtn} onPress={() => onSetActive(set.id)}>
-            <Text style={poseStyles.setActiveBtnText}>Set as Active</Text>
+          <TouchableOpacity style={[poseStyles.setActiveBtn, { borderColor: accentColor }]} onPress={() => onSetActive(set.id)}>
+            <Text style={[poseStyles.setActiveBtnText, { color: accentColor }]}>Set as Active</Text>
           </TouchableOpacity>
         )}
       </View>
@@ -911,6 +929,29 @@ const poseStyles = StyleSheet.create({
   loadingText: { fontSize: 12, color: '#9ca3af' },
 
   noGenerateHint: { fontSize: 10, color: '#4b5563', textAlign: 'center' },
+
+  glbPreview: {
+    backgroundColor: '#000d1f',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#003566',
+    padding: 12,
+    alignItems: 'center',
+    gap: 4,
+  },
+  glbIcon: { fontSize: 28, color: '#3b82f6' },
+  glbReadyText: { fontSize: 12, fontWeight: '600', color: '#9ca3af' },
+  glbFileName: { fontSize: 9, color: '#4b5563', maxWidth: '100%' },
+
+  tripobadge: {
+    backgroundColor: 'rgba(168,85,247,0.2)',
+    borderRadius: 4,
+    borderWidth: 1,
+    borderColor: '#a855f7',
+    paddingHorizontal: 5,
+    paddingVertical: 2,
+  },
+  tripoBadgeText: { fontSize: 9, color: '#a855f7', fontWeight: '700', letterSpacing: 0.8 },
 });
 
 // ─── Main Styles ──────────────────────────────────────────────────────────────

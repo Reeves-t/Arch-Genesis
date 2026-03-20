@@ -75,17 +75,22 @@ export interface Cypher {
   portraitImage?: string;
   battlePoseImage?: string;
 
-  // Assets — directional battle poses (generated at creation)
+  // Assets — 3D model (Tripo GLB, used for battle grid and 3D viewer)
+  modelUrl?: string | null;
+  modelGeneratedAt?: string | null;
+
+  // Assets — directional battle poses (LEGACY PNG — kept for reference)
+  // image_right_url and image_left_url replaced by modelUrl with Y-axis rotation
   imageFrontUrl?: string | null;
   imageRightUrl?: string | null;
   imageLeftUrl?: string | null;
 
-  // Assets — attack poses
+  // Assets — attack poses (LEGACY PNG — kept for reference)
   attackFrontUrl?: string | null;
   attackRightUrl?: string | null;
   attackLeftUrl?: string | null;
 
-  // Assets — defend poses
+  // Assets — defend poses (LEGACY PNG — kept for reference)
   defendFrontUrl?: string | null;
   defendRightUrl?: string | null;
   defendLeftUrl?: string | null;
