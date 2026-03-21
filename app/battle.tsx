@@ -470,6 +470,7 @@ export default function BattleScreen() {
         setTurnPhase('move');
       } catch (err) {
         console.warn('NPC generation failed, using fallback:', err);
+        await new Promise<void>((res) => setTimeout(res, 3000));
         const npc = buildFallbackNPC();
         const playerInit = calcInitiative(playerCypher);
         const npcInit = calcInitiative(npc);
@@ -710,6 +711,8 @@ export default function BattleScreen() {
     try {
       const bPhase = buildBattlePhase(currentTurn);
       const finalPlayerPos = moveDestination ?? playerPos;
+      // Guard: always send a valid path (at minimum the player's position)
+      const effectivePath = movementPath.length > 0 ? movementPath : [finalPlayerPos];
 
       const { data: turnData, error: turnError } = await supabase.functions.invoke(
         'battle-framework-master',
@@ -734,7 +737,7 @@ export default function BattleScreen() {
             player_selected_move: selectedMove.action_description,
             battle_phase: bPhase,
             initiative_winner: initiativeWinner,
-            player_move_path: movementPath,
+            player_move_path: effectivePath,
             player_final_position: finalPlayerPos,
           },
         }
@@ -754,8 +757,8 @@ export default function BattleScreen() {
       setLastAttackTo(null);
 
       // Animate player along traced path first
-      if (movementPath.length > 1) {
-        await animateModelAlongPath(movementPath, 'player');
+      if (effectivePath.length > 1) {
+        await animateModelAlongPath(effectivePath, 'player');
       } else if (finalPlayerPos.x !== playerPos.x || finalPlayerPos.y !== playerPos.y) {
         await animateMarkerToPosition(finalPlayerPos, 'player');
       }
@@ -791,7 +794,7 @@ export default function BattleScreen() {
             player_new_position: newPlayerPos,
             opponent_new_position: newOpponentPos,
             attack_connected: didConnect,
-            player_move_path: movementPath,
+            player_move_path: effectivePath,
             opponent_move_path: turnData.opponent_move_path ?? null,
             attack_missed_reason: turnData.attack_missed_reason ?? null,
           },
@@ -851,11 +854,12 @@ export default function BattleScreen() {
       setTypewriterText('');
       setTurnPhase('narrating');
     } catch (err) {
-      console.warn('Turn error:', err);
-      setTurnPhase('move');
+      console.error('Turn error:', err);
+      setCurrentTurn((prev) => prev + 1);
       setSelectedMove(null);
       setMovementPath([]);
       setMoveDestination(null);
+      setTurnPhase('move');
     }
   }, [
     executeReady, selectedMove, targetCell, opponentCypher, playerCypher,

@@ -242,36 +242,49 @@ ${patternNote || 'No pattern detected yet.'}
 FULL MOVE HISTORY:
 ${historyText}
 
-Return this exact JSON (include grid positions):
+Return ONLY a raw JSON object with these exact fields. Use the concrete types described — no pipe unions, no placeholder angle brackets, no extra text outside the JSON.
+
+Field types:
+- advantage_delta: integer -4 to +4
+- new_advantage_score: integer -10 to +10
+- player_condition / opponent_condition: exactly one of "Stable", "Pressured", "Critical", "Desperate"
+- turn_winner: exactly one of "player", "opponent", "draw"
+- positional_advantage: exactly one of "player", "opponent", "none"
+- battle_phase: exactly one of "early", "mid", "late"
+- winner: "player", "opponent", or JSON null
+- lucky_way_out_path: array of 2 move description strings, or JSON null
+- opponent_move_path: array of {x, y} grid cells for opponent movement this turn
+- attack_missed_reason: "evaded", "out_of_range", or JSON null
+
 {
   "opponent_move": "ability name used",
   "opponent_move_description": "one sentence describing the opponent's action and intent",
-  "advantage_delta": <integer -4 to +4>,
-  "new_advantage_score": <integer -10 to +10>,
-  "player_condition": "Stable" | "Pressured" | "Critical" | "Desperate",
-  "opponent_condition": "Stable" | "Pressured" | "Critical" | "Desperate",
-  "turn_winner": "player" | "opponent" | "draw",
-  "attack_connected": true | false,
-  "player_new_position": {"x": <1-13>, "y": <1-7>},
-  "opponent_new_position": {"x": <1-13>, "y": <1-7>},
-  "positional_advantage": "player" | "opponent" | "none",
-  "weakness_finisher_available": true | false,
-  "opponent_weakness_finisher_available": true | false,
-  "lucky_way_out_active": true | false,
-  "lucky_way_out_path": ["move desc 1", "move desc 2"] or null,
+  "advantage_delta": 0,
+  "new_advantage_score": 0,
+  "player_condition": "Stable",
+  "opponent_condition": "Stable",
+  "turn_winner": "draw",
+  "attack_connected": true,
+  "player_new_position": {"x": 3, "y": 4},
+  "opponent_new_position": {"x": 11, "y": 4},
+  "positional_advantage": "none",
+  "weakness_finisher_available": false,
+  "opponent_weakness_finisher_available": false,
+  "lucky_way_out_active": false,
+  "lucky_way_out_path": null,
   "next_player_options": [
     {"id": "opt_1", "action_description": "organic description embedding the ability name", "is_weakness_finisher": false, "is_lucky_way_out_step": false},
     {"id": "opt_2", "action_description": "...", "is_weakness_finisher": false, "is_lucky_way_out_step": false},
     {"id": "opt_3", "action_description": "...", "is_weakness_finisher": false, "is_lucky_way_out_step": false},
     {"id": "opt_4", "action_description": "...", "is_weakness_finisher": false, "is_lucky_way_out_step": false}
   ],
-  "battle_phase": "early" | "mid" | "late",
-  "is_battle_over": true | false,
-  "winner": "player" | "opponent" | null,
+  "battle_phase": "early",
+  "is_battle_over": false,
+  "winner": null,
   "last_turn_context": "one sentence tactical situation",
   "opponent_move_reasoning": "one sentence explaining opponent's choice",
-  "opponent_move_path": [{"x": 13, "y": 4}, {"x": 11, "y": 4}],
-  "attack_missed_reason": "evaded" | "out_of_range" | null
+  "opponent_move_path": [{"x": 13, "y": 4}, {"x": 12, "y": 4}],
+  "attack_missed_reason": null
 }`;
 }
 
@@ -304,8 +317,12 @@ serve(async (req) => {
       if (result.opponent_new_position) {
         result.opponent_new_position = clampPos(result.opponent_new_position.x, result.opponent_new_position.y);
       }
-      if (result.opponent_move_path && Array.isArray(result.opponent_move_path)) {
-        result.opponent_move_path = result.opponent_move_path.map((p: any) => clampPos(p.x, p.y));
+      if (Array.isArray(result.opponent_move_path)) {
+        result.opponent_move_path = result.opponent_move_path
+          .filter((p: any) => p != null && typeof p.x === 'number' && typeof p.y === 'number')
+          .map((p: any) => clampPos(p.x, p.y));
+      } else {
+        result.opponent_move_path = null;
       }
 
       return new Response(JSON.stringify(result), {
